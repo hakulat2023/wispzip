@@ -1,0 +1,211 @@
+/* WispZip design tokens + base styles (light/dark themes; JS writes data-theme="light"|"dark" on <html>.
+   The "follow system" mode is resolved by useTheme on the JS side, then synced to data-theme.
+   color-scheme must be written explicitly as light/dark (not `light dark`), otherwise native
+   checkbox/radio controls on macOS Safari follow the system preference instead of data-theme. */
+:root {
+  --bg: #f5f6fa;
+  --bg-soft: #ffffff;
+  --bg-hover: #eceef5;
+  --panel: #ffffff;
+  --border: #e4e7f0;
+  --border-strong: #d3d8e6;
+  --text: #1b2130;
+  --text-dim: #737d92;
+  --accent: #5b6cff;
+  --accent-2: #9b5bff;
+  --accent-soft: rgba(91, 108, 255, 0.1);
+  --accent-glow: rgba(91, 108, 255, 0.28);
+  --mask: rgba(24, 28, 42, 0.32);
+  --menu-bg: rgba(255, 255, 255, 0.92);
+  --green: #18a978;
+  --red: #e5484d;
+  --amber: #d99000;
+
+  --t-folder: #d98f1f;
+  --t-archive: #5b6cff;
+  --t-image: #18a978;
+  --t-video: #8b5cf6;
+  --t-audio: #ec5fa1;
+  --t-pdf: #e5484d;
+  --t-code: #2f81f7;
+  --t-text: #8590a6;
+  --t-file: #98a2b8;
+
+  --radius: 12px;
+  --mono: "SF Mono", Menlo, Monaco, Consolas, "JetBrains Mono", monospace;
+  --shadow-card: 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-pop: 0 12px 40px rgba(16, 24, 40, 0.18), 0 2px 8px rgba(16, 24, 40, 0.08);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #101319;
+  --bg-soft: #171b24;
+  --bg-hover: #1e2330;
+  --panel: #151923;
+  --border: #262c3b;
+  --border-strong: #333b4e;
+  --text: #e7eaf2;
+  --text-dim: #8d97ad;
+  --accent: #6d7cff;
+  --accent-2: #a86bff;
+  --accent-soft: rgba(109, 124, 255, 0.17);
+  --accent-glow: rgba(109, 124, 255, 0.32);
+  --mask: rgba(5, 8, 14, 0.55);
+  --menu-bg: rgba(26, 30, 41, 0.92);
+  --green: #3ecf8e;
+  --red: #ff6b6b;
+  --amber: #f5b04c;
+
+  --t-folder: #f0a83c;
+  --t-archive: #8b97ff;
+  --t-image: #3ecf8e;
+  --t-video: #b07bff;
+  --t-audio: #f27bbd;
+  --t-pdf: #ff7a7a;
+  --t-code: #5aa2ff;
+  --t-text: #97a2ba;
+  --t-file: #9aa5bd;
+
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 14px 44px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.5;
+  user-select: none;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, opacity 0.14s, color 0.14s;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: none;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+button.primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+input[type="text"],
+input[type="password"],
+input:not([type]),
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+  outline: none;
+  user-select: text;
+  width: 100%;
+  min-height: 38px;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input:not([type]):focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin: 0;
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

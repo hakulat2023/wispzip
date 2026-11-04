@@ -1,0 +1,30 @@
+[package]
+name = "wispzip"
+description = "WispZip desktop app - cross-platform file archiver (Tauri 2 shell)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Named "wispzip-app" so it does not collide with the wispzip-cli binary that is
+# also called "wispzip" — both land in target/release, last build wins otherwise.
+[[bin]]
+name = "wispzip-app"
+path = "src/main.rs"
+
+[lib]
+name = "wispzip_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+wispzip-core = { workspace = true }
+wispzip-cli = { path = "../crates/wispzip-cli" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

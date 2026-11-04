@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/wispzip-core", "crates/wispzip-cli", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["WispZip contributors"]
+
+[workspace.dependencies]
+wispzip-core = { path = "crates/wispzip-core" }
+thiserror = "2"
+walkdir = "2"
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"

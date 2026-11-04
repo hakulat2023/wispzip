@@ -1,0 +1,18 @@
+{
+  "name": "wispzip",
+  "private": true,
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hakulat2023/wispzip.git"
+  },
+  "packageManager": "pnpm@11.23.0",
+  "scripts": {
+    "dev": "pnpm --filter @wispzip/desktop dev",
+    "build": "pnpm --filter @wispzip/desktop build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

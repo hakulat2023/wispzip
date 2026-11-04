@@ -1,0 +1,117 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WispZip",
+  "version": "0.1.0",
+  "identifier": "com.github.hakulat2023.wispzip",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "WispZip",
+        "width": 960,
+        "height": 640,
+        "minWidth": 680,
+        "minHeight": 480,
+        "resizable": true,
+        "dragDropEnabled": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "name": "ZIP 压缩包",
+        "ext": [
+          "zip"
+        ]
+      },
+      {
+        "name": "7z 压缩包",
+        "ext": [
+          "7z"
+        ]
+      },
+      {
+        "name": "RAR 压缩包",
+        "ext": [
+          "rar"
+        ]
+      },
+      {
+        "name": "tar 归档",
+        "ext": [
+          "tar"
+        ]
+      },
+      {
+        "name": "tar.gz 归档",
+        "ext": [
+          "gz",
+          "tgz"
+        ]
+      },
+      {
+        "name": "tar.bz2 归档",
+        "ext": [
+          "bz2",
+          "tbz2"
+        ]
+      },
+      {
+        "name": "tar.xz 归档",
+        "ext": [
+          "xz",
+          "txz"
+        ]
+      },
+      {
+        "name": "tar.zst 归档",
+        "ext": [
+          "zst",
+          "tzst"
+        ]
+      }
+    ],
+    "windows": {
+      "wix": {
+        "language": [
+          "zh-CN",
+          "en-US"
+        ]
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true,
+        "installerHooks": "./installer-hooks.nsh"
+      }
+    },
+    "resources": [
+      "resources/services/**/*"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+# ---- Rust / Cargo ----
+/target/
+**/target/
+**/*.rs.bk
+
+# ---- Node / pnpm / frontend ----
+node_modules/
+dist/
+*.local
+
+# ---- Tauri generated assets ----
+src-tauri/gen/
+
+# Mobile icons: only used by the tauri ios/android targets; this is a desktop-only project
+src-tauri/icons/ios/
+src-tauri/icons/android/
+
+# ---- Build & test intermediates ----
+*.wispzip-part
+*.wispzip-tmp
+wispzip-test-*
+wispzip-interop-*
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---- Editors / IDEs ----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---- Logs & environment ----
+*.log
+.env
+.env.*
+
+# ---- Local development notes (never committed) ----
+*.local.md
+CLAUDE.md
+**/TEST_COVERAGE.md
+
+# ---- Local icon generation script (machine-specific, never committed) ----
+scripts/
+
+# ---- Local tooling data ----
+.workbuddy/

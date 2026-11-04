@@ -1,0 +1,26 @@
+[package]
+name = "wispzip-core"
+description = "Core compression/decompression engine for WispZip (formats, progress, cancel, safety)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zip = "8"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.6"
+xz2 = "0.1"
+zstd = "0.13"
+sevenz-rust = { version = "0.6", features = ["aes256"] }
+encoding_rs = { workspace = true }
+walkdir = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+unrar = "0.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
