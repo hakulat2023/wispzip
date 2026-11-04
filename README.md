@@ -7,8 +7,7 @@ A lightweight file archiver — **minimal main screen, drag-and-drop first, righ
 The architecture follows a **"one core + multiple thin shells"** pattern: all business logic lives in the Rust core crate, while the desktop app and the CLI are thin shells sharing the same engine.
 
 - Desktop: **Tauri 2 + Vue 3 + TypeScript**
-- Core engine: **pure Rust** (`wispzip-core`), streaming end to end — peak RSS stays in the single-digit
-  MB range on a 4.5 GiB file and does not grow with file size (measured, see [Performance](#performance))
+- Core engine: **pure Rust** (`wispzip-core`), streaming — GB-scale archives without blowing up memory
 
 ## Download & Install
 
