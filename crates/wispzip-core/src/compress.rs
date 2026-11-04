@@ -2,7 +2,7 @@
 //! byte-level split volumes. The format-specific writers live in `formats/`.
 
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -118,18 +118,15 @@ where
             .unwrap_or_else(|| "archive".into())
     ));
 
-    let result = run_compress(&entries, &tmp, opt, &shared);
+    let split = opt.split.filter(|&v| v > 0);
+    let result = match split {
+        Some(vol_size) => write_volumes(&entries, out, vol_size, opt, &shared)
+            .map(|bytes| (bytes, volumes::volume_path(out, 1))),
+        None => write_single_file(&entries, &tmp, out, opt, &shared)
+            .map(|bytes| (bytes, out.to_path_buf())),
+    };
     match result {
-        Ok(stats) => {
-            let output_bytes = if let Some(vol) = opt.split.filter(|&v| v > 0) {
-                split_into_volumes(&tmp, out, vol, &shared)?
-            } else {
-                if out.symlink_metadata().is_ok() {
-                    fs::remove_file(out).map_err(|e| io_err(e, out))?;
-                }
-                fs::rename(&tmp, out).map_err(|e| io_err(e, out))?;
-                stats
-            };
+        Ok((output_bytes, output_path)) => {
             {
                 let mut r = shared.borrow_mut();
                 r.phase = Phase::Finish;
@@ -140,11 +137,7 @@ where
                 input_bytes,
                 output_bytes,
                 skipped,
-                output_path: if opt.split.is_some() {
-                    volumes::volume_path(out, 1)
-                } else {
-                    out.to_path_buf()
-                },
+                output_path,
             })
         }
         Err(e) => {
@@ -154,79 +147,11 @@ where
     }
 }
 
-/// Split the finished archive at `tmp` into `<out>.001`-style volumes and
-/// remove `tmp`. Returns the total bytes written. Volumes are staged with a
-/// `.wispzip-part` suffix and renamed into place, so an interrupted split never
-/// leaves a truncated volume behind its final name.
-fn split_into_volumes<F>(
-    tmp: &Path,
-    out: &Path,
-    vol_size: u64,
-    shared: &Shared<F>,
-) -> Result<u64>
-where
-    F: FnMut(&Progress) -> bool,
-{
-    use std::io::Read;
-
-    {
-        let mut r = shared.borrow_mut();
-        r.check_cancel()?;
-        r.total = None;
-        r.processed = 0;
-        r.output = 0;
-        r.report(true);
-    }
-
-    let mut src = BufReader::with_capacity(1 << 20, File::open(tmp).map_err(|e| io_err(e, tmp))?);
-    let mut total = 0u64;
-    let mut index = 1u32;
-    loop {
-        let vol_path = volumes::volume_path(out, index);
-        let part_tmp =
-            vol_path.with_file_name(format!("{}.wispzip-part", vol_path.file_name().unwrap_or_default().to_string_lossy()));
-        let mut w = BufWriter::new(File::create(&part_tmp).map_err(|e| io_err(e, &part_tmp))?);
-        let mut buf = vec![0u8; 1 << 20];
-        let mut written = 0u64;
-        let mut eof = false;
-        while written < vol_size {
-            let want = ((vol_size - written) as usize).min(buf.len());
-            let n = src.read(&mut buf[..want]).map_err(|e| io_err(e, tmp))?;
-            if n == 0 {
-                eof = true;
-                break;
-            }
-            w.write_all(&buf[..n]).map_err(|e| io_err(e, &part_tmp))?;
-            written += n as u64;
-            total += n as u64;
-            {
-                let mut r = shared.borrow_mut();
-                r.output = total;
-                r.check_cancel()?;
-                r.report(false);
-            }
-        }
-        w.flush().map_err(|e| io_err(e, &part_tmp))?;
-        drop(w);
-        if written == 0 {
-            // exact multiple of vol_size: no empty trailing volume
-            let _ = fs::remove_file(&part_tmp);
-            break;
-        }
-        fs::rename(&part_tmp, &vol_path).map_err(|e| io_err(e, &vol_path))?;
-        if eof {
-            break;
-        }
-        index += 1;
-    }
-
-    fs::remove_file(tmp).map_err(|e| io_err(e, tmp))?;
-    Ok(total)
-}
-
-fn run_compress<F>(
+/// Compress to a single archive at `tmp`, then move it into place at `out`.
+fn write_single_file<F>(
     entries: &[PlanEntry],
     tmp: &Path,
+    out: &Path,
     opt: &CompressOptions,
     shared: &Shared<F>,
 ) -> Result<u64>
@@ -234,12 +159,63 @@ where
     F: FnMut(&Progress) -> bool,
 {
     let file = File::create(tmp).map_err(|e| io_err(e, tmp))?;
-    let sink = CountingWriter::new(BufWriter::new(file), shared.clone());
+    let sink = CountingWriter::new(BufWriter::with_capacity(1 << 20, file), shared.clone());
+    let sink = run_compress(entries, sink, opt, shared, tmp)?;
+    // `into_inner` on BufWriter flushes, so the file is complete before the rename.
+    sink.into_inner()
+        .into_inner()
+        .map_err(|e| io_err(e.into(), tmp))?;
+    let bytes = shared.borrow().output;
+    if out.symlink_metadata().is_ok() {
+        fs::remove_file(out).map_err(|e| io_err(e, out))?;
+    }
+    fs::rename(tmp, out).map_err(|e| io_err(e, out))?;
+    Ok(bytes)
+}
+
+/// Compress straight into `<out>.001`, `<out>.002`, … with no intermediate
+/// full-size archive: the format writer's sink is a `volumes::VolumeWriter`,
+/// which maps the archive's logical byte stream onto the volume files as it is
+/// produced. Peak disk usage is therefore ~1x the archive instead of 2x.
+fn write_volumes<F>(
+    entries: &[PlanEntry],
+    out: &Path,
+    vol_size: u64,
+    opt: &CompressOptions,
+    shared: &Shared<F>,
+) -> Result<u64>
+where
+    F: FnMut(&Progress) -> bool,
+{
+    let volumes = volumes::VolumeWriter::create(out, vol_size).map_err(|e| io_err(e, out))?;
+    let sink = CountingWriter::new(volumes, shared.clone());
+    let sink = run_compress(entries, sink, opt, shared, out)?;
+    let volumes = sink.into_inner();
+    let total = volumes.finalize().map_err(|e| io_err(e, out))?;
+    {
+        let mut r = shared.borrow_mut();
+        r.output = total;
+        r.report(true);
+    }
+    Ok(total)
+}
+
+fn run_compress<F, S>(
+    entries: &[PlanEntry],
+    sink: CountingWriter<S, F>,
+    opt: &CompressOptions,
+    shared: &Shared<F>,
+    path: &Path,
+) -> Result<CountingWriter<S, F>>
+where
+    F: FnMut(&Progress) -> bool,
+    S: Write + Seek,
+{
     let format = opt.format;
     match format {
         Format::Zip => crate::formats::zip::write(entries, sink, opt, shared),
         Format::Tar | Format::TarGz | Format::TarBz2 | Format::TarXz | Format::TarZst => {
-            crate::formats::tar::write(format, entries, sink, opt, shared, tmp)
+            crate::formats::tar::write(format, entries, sink, opt, shared, path)
         }
         Format::Gz | Format::Zst | Format::Xz | Format::Bz2 => {
             crate::formats::streams::write(format, entries, sink, opt, shared)
@@ -249,9 +225,6 @@ where
             "RAR compression is proprietary — extraction only".into(),
         )),
     }
-    .map(|_| {
-        shared.borrow().output
-    })
 }
 
 // ---- planning ---------------------------------------------------------------

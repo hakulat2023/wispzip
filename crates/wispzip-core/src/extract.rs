@@ -111,20 +111,18 @@ pub struct ExtractStats {
 }
 
 /// Extract `archive` into `opt.dest`.
+///
+/// Split volumes (`<archive>.001`, …) are read as one contiguous stream, so no
+/// full-size temporary copy is made.
 pub fn extract<F>(archive: &Path, opt: &ExtractOptions, cb: F) -> Result<ExtractStats>
 where
     F: FnMut(&Progress) -> bool,
 {
-    // split volumes (<archive>.001 …): reassemble, then extract normally
-    if let Some(set) = crate::volumes::detect(archive)? {
-        let tmp = crate::volumes::assemble(&set)?;
-        let result = extract(&tmp, opt, cb);
-        let _ = std::fs::remove_file(&tmp);
-        return result;
-    }
-
-    let meta = fs::metadata(archive).map_err(|e| io_err(e, archive))?;
-    let (format, class) = crate::format::detect(archive)?;
+    let source = match crate::volumes::detect(archive)? {
+        Some(set) => crate::source::ArchiveSource::from_volumes(set),
+        None => crate::source::ArchiveSource::from_path(archive)?,
+    };
+    let (format, class) = crate::format::detect_source(&source)?;
     fs::create_dir_all(&opt.dest).map_err(|e| io_err(e, &opt.dest))?;
 
     let shared = Reporter::new(new_cancel_flag(), cb);
@@ -134,8 +132,8 @@ where
         // Known totals: tar pipelines count compressed stream position; zip
         // totals are summed from the central directory; 7z is indeterminate.
         r.total = match class {
-            Classification::SingleStream => Some(meta.len()),
-            _ if format.is_tar_based() => Some(meta.len()),
+            Classification::SingleStream => Some(source.len()),
+            _ if format.is_tar_based() => Some(source.len()),
             _ => None,
         };
         r.report(true);
@@ -150,13 +148,25 @@ where
     };
 
     match format {
-        Format::Zip => crate::formats::zip::extract(archive, opt, &shared, &mut stats)?,
-        Format::SevenZ => crate::formats::sevenz::extract(archive, opt, &shared, &mut stats)?,
-        Format::Rar => crate::formats::rar::extract(archive, opt, &shared, &mut stats)?,
+        Format::Zip => crate::formats::zip::extract(&source, opt, &shared, &mut stats)?,
+        Format::SevenZ => crate::formats::sevenz::extract(&source, opt, &shared, &mut stats)?,
+        // UnRAR only accepts a real file path, so a split rar set still has to
+        // be concatenated into a temporary archive first.
+        Format::Rar => match &source {
+            crate::source::ArchiveSource::File { path, .. } => {
+                crate::formats::rar::extract(path, opt, &shared, &mut stats)?
+            }
+            crate::source::ArchiveSource::Volumes(set) => {
+                let tmp = crate::volumes::assemble(set)?;
+                let result = crate::formats::rar::extract(&tmp, opt, &shared, &mut stats);
+                let _ = fs::remove_file(&tmp);
+                result?
+            }
+        },
         Format::Gz | Format::Zst | Format::Xz | Format::Bz2 => {
-            crate::formats::streams::extract(archive, opt, format, &shared, &mut stats)?
+            crate::formats::streams::extract(&source, opt, format, &shared, &mut stats)?
         }
-        _ => crate::formats::tar::extract(archive, opt, format, &shared, &mut stats)?,
+        _ => crate::formats::tar::extract(&source, opt, format, &shared, &mut stats)?,
     }
 
     {

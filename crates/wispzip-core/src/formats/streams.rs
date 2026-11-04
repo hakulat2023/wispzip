@@ -11,18 +11,20 @@ use crate::error::{io_err, Result};
 use crate::extract::{set_file_metadata, ExtractOptions, ExtractStats, TargetAction};
 use crate::format::Format;
 use crate::progress::{system_time_from_unix, CountingReader, CountingWriter, Progress, Shared};
+use crate::source::ArchiveSource;
 
 // ---- write -----------------------------------------------------------------
 
-pub(crate) fn write<F>(
+pub(crate) fn write<F, S>(
     format: Format,
     entries: &[PlanEntry],
-    sink: CountingWriter<BufWriter<File>, F>,
+    sink: CountingWriter<S, F>,
     opt: &CompressOptions,
     shared: &Shared<F>,
-) -> Result<()>
+) -> Result<CountingWriter<S, F>>
 where
     F: FnMut(&Progress) -> bool,
+    S: io::Write + io::Seek,
 {
     let e = &entries[0];
     {
@@ -32,23 +34,23 @@ where
     }
     let f = File::open(&e.src).map_err(|er| io_err(er, &e.src))?;
     let mut cr = CountingReader::new(BufReader::new(f), shared.clone());
-    match format {
+    let sink = match format {
         Format::Gz => {
             let mut enc =
                 flate2::write::GzEncoder::new(sink, flate2::Compression::new(opt.level.min(9) as u32));
             io::copy(&mut cr, &mut enc).map_err(|er| io_err(er, &e.src))?;
-            enc.finish().map_err(|er| io_err(er, &e.src))?;
+            enc.finish().map_err(|er| io_err(er, &e.src))?
         }
         Format::Zst => {
             let mut enc = zstd::stream::write::Encoder::new(sink, opt.level.clamp(1, 22) as i32)
                 .map_err(|er| io_err(er, &e.src))?;
             io::copy(&mut cr, &mut enc).map_err(|er| io_err(er, &e.src))?;
-            enc.finish().map_err(|er| io_err(er, &e.src))?;
+            enc.finish().map_err(|er| io_err(er, &e.src))?
         }
         Format::Xz => {
             let mut enc = xz2::write::XzEncoder::new(sink, opt.level.min(9) as u32);
             io::copy(&mut cr, &mut enc).map_err(|er| io_err(er, &e.src))?;
-            enc.finish().map_err(|er| io_err(er, &e.src))?;
+            enc.finish().map_err(|er| io_err(er, &e.src))?
         }
         Format::Bz2 => {
             let mut enc = bzip2::write::BzEncoder::new(
@@ -56,22 +58,22 @@ where
                 bzip2::Compression::new(opt.level.clamp(1, 9) as u32),
             );
             io::copy(&mut cr, &mut enc).map_err(|er| io_err(er, &e.src))?;
-            enc.finish().map_err(|er| io_err(er, &e.src))?;
+            enc.finish().map_err(|er| io_err(er, &e.src))?
         }
         _ => unreachable!("streams::write only handles gz/zst/xz/bz2"),
-    }
+    };
     {
         let mut r = shared.borrow_mut();
         r.files_done += 1;
         r.report(true);
     }
-    Ok(())
+    Ok(sink)
 }
 
 // ---- extract ---------------------------------------------------------------
 
 pub(crate) fn extract<F>(
-    archive: &Path,
+    src: &ArchiveSource,
     opt: &ExtractOptions,
     format: Format,
     shared: &Shared<F>,
@@ -80,7 +82,10 @@ pub(crate) fn extract<F>(
 where
     F: FnMut(&Progress) -> bool,
 {
-    let out_name = output_name(archive);
+    let path = src.display_path();
+    // A split stream (`data.txt.gz.001`) names its output after the logical
+    // archive, not after the volume on disk.
+    let out_name = output_name(&src.logical_path());
     let target = match opt.resolve(&out_name)? {
         TargetAction::Write(t) => t,
         TargetAction::Skip => {
@@ -89,8 +94,7 @@ where
         }
     };
 
-    let f = File::open(archive).map_err(|e| io_err(e, archive))?;
-    let br = CountingReader::new(BufReader::new(f), shared.clone());
+    let br = CountingReader::new(src.open()?, shared.clone());
     let out = File::create(&target).map_err(|e| io_err(e, &target))?;
     let mut cw = CountingWriter::new(BufWriter::new(out), shared.clone());
     let mut gz_mtime: Option<SystemTime> = None;
@@ -106,7 +110,7 @@ where
             io::copy(&mut dec, &mut cw)
         }
         Format::Zst => {
-            let mut dec = zstd::stream::read::Decoder::new(br).map_err(|e| io_err(e, archive))?;
+            let mut dec = zstd::stream::read::Decoder::new(br).map_err(|e| io_err(e, &path))?;
             io::copy(&mut dec, &mut cw)
         }
         Format::Xz => {

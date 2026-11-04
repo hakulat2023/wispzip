@@ -2,7 +2,7 @@
 //! UTF-8/GBK legacy entry-name decoding for both extract and list.
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -14,18 +14,20 @@ use crate::extract::{
 };
 use crate::formats::days_from_civil;
 use crate::progress::{system_time_from_unix, CountingReader, CountingWriter, Progress, Shared};
+use crate::source::ArchiveSource;
 use zip::{ZipArchive, ZipReadOptions};
 
 // ---- write -----------------------------------------------------------------
 
-pub(crate) fn write<F>(
+pub(crate) fn write<F, S>(
     entries: &[PlanEntry],
-    sink: CountingWriter<BufWriter<File>, F>,
+    sink: CountingWriter<S, F>,
     opt: &CompressOptions,
     shared: &Shared<F>,
-) -> Result<()>
+) -> Result<CountingWriter<S, F>>
 where
     F: FnMut(&Progress) -> bool,
+    S: io::Write + io::Seek,
 {
     use zip::write::SimpleFileOptions;
     use zip::AesMode;
@@ -75,14 +77,16 @@ where
             }
         }
     }
-    zw.finish().map_err(|er| zip_err(er, Path::new("archive")))?;
-    Ok(())
+    let sink = zw
+        .finish()
+        .map_err(|er| zip_err(er, Path::new("archive")))?;
+    Ok(sink)
 }
 
 // ---- extract ---------------------------------------------------------------
 
 pub(crate) fn extract<F>(
-    archive: &Path,
+    src: &ArchiveSource,
     opt: &ExtractOptions,
     shared: &Shared<F>,
     stats: &mut ExtractStats,
@@ -95,10 +99,9 @@ where
     use std::sync::mpsc;
     use std::sync::Arc;
 
-    
+    let path = src.display_path();
     let sel = EntrySelection::new(&opt.entries);
-    let f = File::open(archive).map_err(|e| io_err(e, archive))?;
-    let mut z = ZipArchive::new(BufReader::new(f)).map_err(|e| zip_err(e, archive))?;
+    let mut z = ZipArchive::new(src.open()?).map_err(|e| zip_err(e, &path))?;
     let n = z.len();
 
     // ---- Phase 1: zero-decompression scan. Target paths for selected entries are resolved serially
@@ -114,7 +117,7 @@ where
     let mut total: u64 = 0;
     for i in 0..n {
         shared.borrow().check_cancel()?;
-        let zf = z.by_index_raw(i).map_err(|e| zip_err(e, archive))?;
+        let zf = z.by_index_raw(i).map_err(|e| zip_err(e, &path))?;
         let raw = zf.name_raw().to_vec();
         let name = decode_entry_name(&raw, opt.encoding);
         if name.is_empty() || !sel.selects(&name) {
@@ -167,19 +170,19 @@ where
         let cursor = Arc::clone(&cursor);
         let cancel = Arc::clone(&workers_cancel);
         let tx = tx.clone();
-        let archive = archive.to_path_buf();
+        let src = src.clone();
         let password = opt.password.clone();
         handles.push(std::thread::spawn(move || {
             let fail = |e: WispZipError| {
                 let _ = tx.send(WorkerMsg::Failed(e));
             };
-            let file = match File::open(&archive) {
-                Ok(f) => f,
-                Err(e) => return fail(WispZipError::Io { path: archive.clone(), source: e }),
+            let reader = match src.open() {
+                Ok(r) => r,
+                Err(e) => return fail(e),
             };
-            let mut z = match ZipArchive::new(BufReader::new(file)) {
+            let mut z = match ZipArchive::new(reader) {
                 Ok(z) => z,
-                Err(e) => return fail(zip_err(e, &archive)),
+                Err(e) => return fail(zip_err(e, &src.display_path())),
             };
             loop {
                 if cancel.load(std::sync::atomic::Ordering::SeqCst) {
@@ -192,7 +195,7 @@ where
                 let item = &work[idx];
                 let mut zf = match opt_password_open(&mut z, item.index, password.as_deref()) {
                     Ok(zf) => zf,
-                    Err(e) => return fail(zip_err(e, &archive)),
+                    Err(e) => return fail(zip_err(e, &src.display_path())),
                 };
                 let out = match File::create(&item.target) {
                     Ok(o) => o,
@@ -216,7 +219,7 @@ where
                         Err(e) => {
                             // With a password supplied, a decrypt/CRC failure is almost always a wrong password
                             let err = if password.is_some() && !crate::error::is_cancel_io(&e) {
-                                WispZipError::PasswordRequired(archive.display().to_string())
+                                WispZipError::PasswordRequired(src.display_path().display().to_string())
                             } else {
                                 WispZipError::Io { path: item.target.clone(), source: e }
                             };
@@ -306,13 +309,13 @@ enum WorkerMsg {
 
 // ---- list ------------------------------------------------------------------
 
-pub(crate) fn list(archive: &Path, encoding: NameEncoding) -> Result<Vec<super::EntryInfo>> {
+pub(crate) fn list(src: &ArchiveSource, encoding: NameEncoding) -> Result<Vec<super::EntryInfo>> {
     use zip::ZipArchive;
-    let f = File::open(archive).map_err(|e| io_err(e, archive))?;
-    let mut z = ZipArchive::new(BufReader::new(f)).map_err(|e| zip_err(e, archive))?;
+    let path = src.display_path();
+    let mut z = ZipArchive::new(src.open()?).map_err(|e| zip_err(e, &path))?;
     let mut out = Vec::with_capacity(z.len());
     for i in 0..z.len() {
-        let zf = z.by_index_raw(i).map_err(|e| zip_err(e, archive))?;
+        let zf = z.by_index_raw(i).map_err(|e| zip_err(e, &path))?;
         let name = decode_entry_name(zf.name_raw(), encoding);
         out.push(super::EntryInfo {
             is_dir: zf.is_dir(),

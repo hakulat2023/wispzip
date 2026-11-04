@@ -13,57 +13,57 @@ use crate::extract::{
 };
 use crate::format::Format;
 use crate::progress::{system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared};
+use crate::source::ArchiveSource;
 
 // ---- write -----------------------------------------------------------------
 
 /// Compress into the tar container, wrapped in the encoder that `format`
 /// selects. The plain `Format::Tar` arm just streams straight through.
-pub(crate) fn write<F>(
+pub(crate) fn write<F, S>(
     format: Format,
     entries: &[PlanEntry],
-    sink: CountingWriter<BufWriter<File>, F>,
+    sink: CountingWriter<S, F>,
     opt: &CompressOptions,
     shared: &Shared<F>,
     tmp: &Path,
-) -> Result<()>
+) -> Result<CountingWriter<S, F>>
 where
     F: FnMut(&Progress) -> bool,
+    S: io::Write + io::Seek,
 {
     let level = opt.level;
-    match format {
-        Format::Tar => {
-            tar_build(entries, sink, shared)?;
-        }
+    let sink = match format {
+        Format::Tar => tar_build(entries, sink, shared)?,
         Format::TarGz => {
             let enc = flate2::write::GzEncoder::new(sink, flate2::Compression::new(level.min(9) as u32));
             let enc = tar_build(entries, enc, shared)?;
-            enc.finish().map_err(|e| io_err(e, tmp))?;
+            enc.finish().map_err(|e| io_err(e, tmp))?
         }
         Format::TarBz2 => {
             let enc = bzip2::write::BzEncoder::new(sink, bzip2::Compression::new(level.clamp(1, 9) as u32));
             let enc = tar_build(entries, enc, shared)?;
-            enc.finish().map_err(|e| io_err(e, tmp))?;
+            enc.finish().map_err(|e| io_err(e, tmp))?
         }
         Format::TarXz => {
             let enc = xz2::write::XzEncoder::new(sink, level.min(9) as u32);
             let enc = tar_build(entries, enc, shared)?;
-            enc.finish().map_err(|e| io_err(e, tmp))?;
+            enc.finish().map_err(|e| io_err(e, tmp))?
         }
         Format::TarZst => {
             let enc = zstd::stream::write::Encoder::new(sink, level.clamp(1, 22) as i32)
                 .map_err(|e| io_err(e, tmp))?;
             let enc = tar_build(entries, enc, shared)?;
-            enc.finish().map_err(|e| io_err(e, tmp))?;
+            enc.finish().map_err(|e| io_err(e, tmp))?
         }
         _ => unreachable!("tar::write only handles tar-based formats"),
-    }
-    Ok(())
+    };
+    Ok(sink)
 }
 
 // ---- extract ---------------------------------------------------------------
 
 pub(crate) fn extract<F>(
-    archive: &Path,
+    src: &ArchiveSource,
     opt: &ExtractOptions,
     format: Format,
     shared: &Shared<F>,
@@ -72,15 +72,15 @@ pub(crate) fn extract<F>(
 where
     F: FnMut(&Progress) -> bool,
 {
-    let f = File::open(archive).map_err(|e| io_err(e, archive))?;
-    let br = CountingReader::new(BufReader::new(f), shared.clone());
+    let path = src.display_path();
+    let br = CountingReader::new(src.open()?, shared.clone());
     match format {
         Format::Tar => tar_read(br, opt, shared, stats),
         Format::TarGz => tar_read(flate2::read::MultiGzDecoder::new(br), opt, shared, stats),
         Format::TarBz2 => tar_read(bzip2::read::BzDecoder::new(br), opt, shared, stats),
         Format::TarXz => tar_read(xz2::read::XzDecoder::new_multi_decoder(br), opt, shared, stats),
         Format::TarZst => {
-            let dec = zstd::stream::read::Decoder::new(br).map_err(|e| io_err(e, archive))?;
+            let dec = zstd::stream::read::Decoder::new(br).map_err(|e| io_err(e, &path))?;
             tar_read(dec, opt, shared, stats)
         }
         _ => unreachable!("tar::extract only handles tar-based formats"),
@@ -90,28 +90,28 @@ where
 // ---- list ------------------------------------------------------------------
 
 pub(crate) fn list(
-    archive: &Path,
+    src: &ArchiveSource,
     format: Format,
 ) -> Result<Vec<super::EntryInfo>> {
-    let f = File::open(archive).map_err(|e| io_err(e, archive))?;
+    let path = src.display_path();
+    let f = src.open()?;
     let mut out = Vec::new();
     match format {
-        Format::Tar => collect(tar::Archive::new(BufReader::new(f)), &mut out)?,
+        Format::Tar => collect(tar::Archive::new(f), &mut out)?,
         Format::TarGz => collect(
-            tar::Archive::new(flate2::read::MultiGzDecoder::new(BufReader::new(f))),
+            tar::Archive::new(flate2::read::MultiGzDecoder::new(f)),
             &mut out,
         )?,
         Format::TarBz2 => collect(
-            tar::Archive::new(bzip2::read::BzDecoder::new(BufReader::new(f))),
+            tar::Archive::new(bzip2::read::BzDecoder::new(f)),
             &mut out,
         )?,
         Format::TarXz => collect(
-            tar::Archive::new(xz2::read::XzDecoder::new_multi_decoder(BufReader::new(f))),
+            tar::Archive::new(xz2::read::XzDecoder::new_multi_decoder(f)),
             &mut out,
         )?,
         Format::TarZst => {
-            let dec =
-                zstd::stream::read::Decoder::new(BufReader::new(f)).map_err(|e| io_err(e, archive))?;
+            let dec = zstd::stream::read::Decoder::new(f).map_err(|e| io_err(e, &path))?;
             collect(tar::Archive::new(dec), &mut out)?
         }
         _ => unreachable!("tar::list only handles tar-based formats"),

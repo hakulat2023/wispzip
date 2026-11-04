@@ -13,6 +13,7 @@ pub mod formats;
 pub mod listing;
 pub mod progress;
 pub mod safe;
+mod source;
 mod sysload;
 mod volumes;
 

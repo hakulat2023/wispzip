@@ -1271,3 +1271,244 @@ fn strip_prefix_flattens_selected_subtree() {
         );
     }
 }
+
+// ---- streaming split (VolumeWriter) ----------------------------------------
+
+/// Concatenate `<stem>.001 .. stem.NNN` back into one byte vector.
+fn read_volumes(stem: &Path) -> Vec<u8> {
+    let name = stem.file_name().unwrap().to_string_lossy().into_owned();
+    let mut out = Vec::new();
+    let mut index = 1u32;
+    loop {
+        let part = stem.with_file_name(format!("{name}.{index:03}"));
+        match fs::read(&part) {
+            Ok(bytes) => out.extend_from_slice(&bytes),
+            Err(_) => break,
+        }
+        index += 1;
+    }
+    out
+}
+
+fn volume_sizes(stem: &Path) -> Vec<u64> {
+    let name = stem.file_name().unwrap().to_string_lossy().into_owned();
+    let mut sizes = Vec::new();
+    let mut index = 1u32;
+    loop {
+        let part = stem.with_file_name(format!("{name}.{index:03}"));
+        match fs::metadata(&part) {
+            Ok(m) => sizes.push(m.len()),
+            Err(_) => break,
+        }
+        index += 1;
+    }
+    sizes
+}
+
+fn staged_parts(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".wispzip-part"))
+        .collect()
+}
+
+/// The streaming split must not alter a single archive byte: concatenating the
+/// volumes has to reproduce the single-file archive exactly, for every format
+/// (zip and 7z both seek back into already-written regions near the end).
+#[test]
+fn split_volumes_are_byte_identical_to_single_archive() {
+    const VOL: u64 = 64 * 1024;
+    for format in [Format::Zip, Format::SevenZ, Format::Tar, Format::TarGz, Format::TarBz2] {
+        let tag = format.extension().replace('.', "-");
+        let root = temp_root(&format!("split-bytes-{tag}"));
+        let src = root.join("payload.bin");
+        fs::write(&src, prng(7, 300 * 1024)).unwrap();
+
+        let single = root.join(format!("single.{}", format.extension()));
+        compress(
+            &[src.clone()],
+            &single,
+            &CompressOptions { format, level: 1, ..Default::default() },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} single compress failed: {e}"));
+
+        let split = root.join(format!("split.{}", format.extension()));
+        let stats = compress(
+            &[src],
+            &split,
+            &CompressOptions { format, level: 1, split: Some(VOL), ..Default::default() },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} split compress failed: {e}"));
+
+        let joined = read_volumes(&split);
+        let expected = fs::read(&single).unwrap();
+        assert_eq!(
+            joined.len(),
+            expected.len(),
+            "{format:?}: volume set is {} bytes, archive is {}",
+            joined.len(),
+            expected.len()
+        );
+        assert!(joined == expected, "{format:?}: concatenated volumes differ from the archive");
+        assert_eq!(stats.output_bytes, expected.len() as u64, "{format:?}");
+
+        let sizes = volume_sizes(&split);
+        assert!(sizes.len() >= 2, "{format:?}: expected several volumes, got {sizes:?}");
+        assert!(
+            sizes[..sizes.len() - 1].iter().all(|&s| s == VOL),
+            "{format:?}: every volume but the last must be exactly {VOL} bytes: {sizes:?}"
+        );
+        assert!(sizes[sizes.len() - 1] <= VOL);
+        assert!(staged_parts(&root).is_empty(), "{format:?}: staged parts left behind");
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/// A cancelled split run must leave neither volumes nor staging files.
+#[test]
+fn cancelled_split_leaves_nothing_behind() {
+    let root = temp_root("split-cancel");
+    let src = root.join("payload.bin");
+    fs::write(&src, prng(11, 200 * 1024)).unwrap();
+    let out = root.join("c.zip");
+
+    let err = compress(
+        &[src],
+        &out,
+        &CompressOptions { format: Format::Zip, split: Some(16 * 1024), ..Default::default() },
+        |_| false,
+    )
+    .unwrap_err();
+    assert!(matches!(err, WispZipError::Cancelled), "{err}");
+
+    assert!(volume_sizes(&out).is_empty(), "no volume may survive a cancel");
+    assert!(staged_parts(&root).is_empty(), "staging files must be removed");
+    assert!(!out.exists(), "no single archive either");
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ---- streaming split (VolumeReader) ---------------------------------------
+
+/// Files the old implementation left in the temp directory when reassembling
+/// a volume set: one full-size copy of the archive.
+fn reassembly_temp_files() -> usize {
+    fs::read_dir(std::env::temp_dir())
+        .map(|it| {
+            it.filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("wispzip-vol-"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Reading a volume set must not depend on a reassembled copy: listing and
+/// extraction from `<stem>.001` have to match the single-file archive exactly,
+/// for formats whose parsers seek backwards (zip central directory, 7z header
+/// at offset 0) as well as for pure streams.
+#[test]
+fn split_volumes_extract_matches_single_archive() {
+    for format in [Format::Zip, Format::SevenZ, Format::TarGz, Format::TarXz] {
+        let tag = format.extension().replace('.', "-");
+        let root = temp_root(&format!("split-extract-{tag}"));
+        let src = build_tree(&root);
+        let expected = walk_files(&src);
+
+        let single = root.join(format!("single.{}", format.extension()));
+        compress(
+            &[src.clone()],
+            &single,
+            &CompressOptions { format, level: 1, ..Default::default() },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} single compress failed: {e}"));
+
+        let split = root.join(format!("split.{}", format.extension()));
+        compress(
+            &[src],
+            &split,
+            &CompressOptions { format, level: 1, split: Some(64 * 1024), ..Default::default() },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} split compress failed: {e}"));
+
+        let first = root.join(format!("split.{}.001", format.extension()));
+        assert!(first.is_file(), "{format:?}: first volume missing");
+
+        // Listing has to agree entry for entry.
+        let from_single = list_archive(&single, wispzip_core::NameEncoding::Auto, None)
+            .unwrap_or_else(|e| panic!("{format:?} list single failed: {e}"));
+        let from_volumes = list_archive(&first, wispzip_core::NameEncoding::Auto, None)
+            .unwrap_or_else(|e| panic!("{format:?} list volumes failed: {e}"));
+        let names = |v: &[wispzip_core::EntryInfo]| -> Vec<(String, u64, bool)> {
+            v.iter().map(|e| (e.name.clone(), e.size, e.is_dir)).collect()
+        };
+        assert_eq!(names(&from_single), names(&from_volumes), "{format:?}: listing differs");
+
+        // Extraction has to produce identical bytes and leave no temp copy.
+        let dest = root.join("out-dir");
+        let temp_before = reassembly_temp_files();
+        extract(
+            &first,
+            &ExtractOptions {
+                dest: dest.clone(),
+                conflict: wispzip_core::Conflict::Overwrite,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} extract from volumes failed: {e}"));
+        assert_eq!(
+            reassembly_temp_files(),
+            temp_before,
+            "{format:?}: extraction must not reassemble the archive in the temp directory"
+        );
+
+        let got = walk_files(&dest);
+        assert_eq!(got.len(), expected.len(), "{format:?}");
+        for (exp, got) in expected.iter().zip(got.iter()) {
+            let rel_exp = exp.0.strip_prefix(&root).unwrap();
+            let rel_got = got.0.strip_prefix(&dest).unwrap();
+            assert_eq!(rel_exp, rel_got, "{format:?} name mismatch");
+            assert_eq!(exp.1, got.1, "{format:?} content mismatch for {rel_exp:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/// A single-file archive must keep working through the new source abstraction,
+/// including the `entries` selection that resolves names before reading.
+#[test]
+fn single_file_extract_still_selects_entries() {
+    let root = temp_root("single-select");
+    let src = build_tree(&root);
+    let archive = root.join("one.zip");
+    compress(
+        &[src.clone()],
+        &archive,
+        &CompressOptions { format: Format::Zip, ..Default::default() },
+        noop_progress,
+    )
+    .unwrap();
+
+    let dest = root.join("picked");
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            entries: Some(vec!["src-tree/nested/a.txt".into()]),
+            conflict: wispzip_core::Conflict::Overwrite,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
+
+    let got = walk_files(&dest);
+    assert_eq!(got.len(), 1, "only the selected entry may be written");
+    assert_eq!(got[0].1, fs::read(src.join("nested/a.txt")).unwrap());
+    let _ = fs::remove_dir_all(&root);
+}

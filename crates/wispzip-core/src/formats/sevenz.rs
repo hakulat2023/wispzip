@@ -3,7 +3,7 @@
 //! listing works without a password, matching 7-Zip defaults.
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufReader};
 use std::path::Path;
 
 use crate::compress::{CompressOptions, PlanEntry};
@@ -13,20 +13,22 @@ use crate::extract::{
     ExtractOptions, ExtractStats, TargetAction,
 };
 use crate::progress::{system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared};
+use crate::source::ArchiveSource;
 
 // ---- write -----------------------------------------------------------------
 
 /// Compress with sevenz-rust's `SevenZWriter`. Content is LZMA2, optionally
 /// wrapped in AES-256 (password); file names stay in plain headers so
 /// `list_archive` keeps working without a password.
-pub(crate) fn write<F>(
+pub(crate) fn write<F, S>(
     entries: &[PlanEntry],
-    sink: CountingWriter<BufWriter<File>, F>,
+    sink: CountingWriter<S, F>,
     opt: &CompressOptions,
     shared: &Shared<F>,
-) -> Result<()>
+) -> Result<CountingWriter<S, F>>
 where
     F: FnMut(&Progress) -> bool,
+    S: io::Write + io::Seek,
 {
     use sevenz_rust::{
         AesEncoderOptions, MethodOptions, Password, SevenZArchiveEntry, SevenZMethod,
@@ -83,14 +85,16 @@ where
             }
         }
     }
-    zw.finish().map_err(|e| io_err(e, Path::new("archive")))?;
-    Ok(())
+    let sink = zw
+        .finish()
+        .map_err(|e| io_err(e, Path::new("archive")))?;
+    Ok(sink)
 }
 
 // ---- extract ---------------------------------------------------------------
 
 pub(crate) fn extract<F>(
-    archive: &Path,
+    src: &ArchiveSource,
     opt: &ExtractOptions,
     shared: &Shared<F>,
     stats: &mut ExtractStats,
@@ -105,7 +109,12 @@ where
         Some(p) => sevenz_rust::Password::from(p),
         None => sevenz_rust::Password::empty(),
     };
-    let mut sz = SevenZReader::open(archive, pw).map_err(|e| extract_err(e, archive, had_pw))?;
+    let archive_path = src.display_path();
+    // SevenZReader::new takes the stream length explicitly, which is exactly
+    // what a volume set reports — the 7z header at offset 0 is read through
+    // the same seekable stream.
+    let mut sz = SevenZReader::new(src.open()?, src.len(), pw)
+        .map_err(|e| extract_err(e, &archive_path, had_pw))?;
     // Content encrypted with AES? Wrong/missing password then surfaces as a
     // checksum failure on the decoded stream, so remember it for the mapping.
     let content_encrypted = sz.archive().folders.iter().any(|f| {
@@ -124,7 +133,6 @@ where
     }));
     let st2 = stats2.clone();
     let opt2 = opt.clone();
-    let archive_path = archive.to_path_buf();
 
     sz.for_each_entries(move |entry, reader| {
         {
@@ -204,16 +212,17 @@ where
 
 // ---- list ------------------------------------------------------------------
 
-pub(crate) fn list(archive: &Path, password: Option<&str>) -> Result<Vec<super::EntryInfo>> {
+pub(crate) fn list(src: &ArchiveSource, password: Option<&str>) -> Result<Vec<super::EntryInfo>> {
     use sevenz_rust::SevenZReader;
 
     let pw = match password {
         Some(p) => sevenz_rust::Password::from(p),
         None => sevenz_rust::Password::empty(),
     };
+    let path = src.display_path();
     // SevenZReader (unlike Archive::open) decodes encrypted headers when a
     // password is given, so -mhe=on archives are listable too.
-    let sz = SevenZReader::open(archive, pw).map_err(|e| list_err(e, archive))?;
+    let sz = SevenZReader::new(src.open()?, src.len(), pw).map_err(|e| list_err(e, &path))?;
     Ok(sz
         .archive()
         .files

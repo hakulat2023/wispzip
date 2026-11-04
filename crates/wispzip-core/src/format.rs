@@ -153,6 +153,21 @@ pub fn detect(path: &Path) -> Result<(Format, Classification)> {
     sniff(path)
 }
 
+/// Detect the format of a byte source. The logical archive name is tried
+/// first — a volume set called `backup.tar.gz.001` is a TarGz stream, not an
+/// unknown `001` file — then the magic bytes of the first volume.
+pub(crate) fn detect_source(src: &crate::source::ArchiveSource) -> Result<(Format, Classification)> {
+    let logical = src.logical_path();
+    let name = logical
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Some(f) = Format::from_archive_name(&name) {
+        return Ok((f, f.classification()));
+    }
+    sniff(&src.display_path())
+}
+
 /// Infer the output format from the desired output file name.
 pub fn infer_output_format(out: &Path) -> Result<Format> {
     let name = out
