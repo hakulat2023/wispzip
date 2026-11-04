@@ -7,7 +7,8 @@ A lightweight file archiver — **minimal main screen, drag-and-drop first, righ
 The architecture follows a **"one core + multiple thin shells"** pattern: all business logic lives in the Rust core crate, while the desktop app and the CLI are thin shells sharing the same engine.
 
 - Desktop: **Tauri 2 + Vue 3 + TypeScript**
-- Core engine: **pure Rust** (`wispzip-core`), streaming — GB-scale archives without blowing up memory
+- Core engine: **pure Rust** (`wispzip-core`), streaming end to end — peak RSS stays in the single-digit
+  MB range on a 4.5 GiB file and does not grow with file size (measured, see [Performance](#performance))
 
 ## Download & Install
 
@@ -32,7 +33,7 @@ Or **right-click WispZip.app → Open** (don't double-click). This is a one-time
 | gz / zst / xz / bz2 | ✅ | ✅ | Single-file stream compression (xz for ratio, bz2 for balance); keeps the original name minus the suffix |
 | 7z | ✅ | ✅ | LZMA2 0–9; AES-256 (content-encrypted, header listable without a password); preserves Unix permission bits; supports AES-256 encrypted archives; `-mhe=on` header-encrypted archives can be previewed with a password (`wispzip l -p`) |
 | rar | ➖ | ✅ | Extracts rar4 / rar5 (including encrypted, via the `unrar` library); does not write the proprietary format |
-| Split volumes | ✅ | ✅ | `--split 100M` produces byte-level `.001/.002/…` volumes, transparently reassembled on extract; works with any inner format |
+| Split volumes | ✅ | ✅ | `--split 100M` produces byte-level `.001/.002/…` volumes, written **and** read as a stream — no full-size temp archive on either side; works with any inner format |
 
 General capabilities:
 
@@ -42,7 +43,13 @@ General capabilities:
 - **Safety** — zip-slip protection (rejects `../`, absolute paths, drive letters); every write goes through path validation first
 - **Name conflicts** — skip / overwrite / auto-rename as `name (1).ext`
 - **GBK filename compatibility** — zips packed by Chinese Windows tools won't garble
-- **Split archives** — `--split 100M` yields `backup.7z.001/.002/…`; extracting any volume reassembles automatically, with clear errors for missing or out-of-order volumes
+- **Split archives, streamed on both sides** — `--split 100M` yields `backup.7z.001/.002/…`. Compression
+  maps the archive's logical byte stream straight onto the volume files, and extraction reads back across
+  the set through one seekable reader, so neither direction ever materialises a full-size copy. Peak disk
+  is ~1x the archive instead of 2x, and nothing is left behind in the temp directory. The inner format is
+  detected from the logical name (`backup.tar.gz.001` → tar.gz, not a bare gz stream), and missing or
+  out-of-order volumes fail with a clear error. RAR is the one exception: the UnRAR library only accepts a
+  real file path, so RAR volume sets are still concatenated before extraction
 - **Desktop integration**:
   - Floating main window: drop regular files → compress confirmation; drop an archive → extract confirmation. The confirmation page only asks *what to name it / where to put it* — format, level, password and split volumes all live in the collapsed "Advanced" section
   - The running page supports **pause / resume / cancel**, showing progress, speed and ETA; the done page reports the compression ratio and offers "Open folder"
@@ -53,6 +60,23 @@ General capabilities:
   - **Windows context menu** (registered automatically by the NSIS installer): "Compress to ZIP" on files / folders, "Extract to current folder" on archives
 - CLI shortcuts: `wispzip c <file>` writes `<file>.zip` when `-o` is omitted; `wispzip x <archive> --here` extracts into the current folder
 
+## Performance
+
+Measured on macOS aarch64 with a release build, using `/usr/bin/time -l` for peak RSS and a `du` poller
+for peak disk — these are observations, not estimates.
+
+| Workload | Peak RSS | Peak disk |
+|---|---|---|
+| zip, 4.5 GiB, Deflate level 1 — compress / extract | 3.2 MB / 3.0 MB | — |
+| tar.gz, 4.5 GiB — compress / extract | 3.1 MB / 2.7 MB | — |
+| 7z, 4.5 GiB, LZMA2 level 6 — compress / extract | 95 MB / 11 MB | — |
+| 1.2 GB → 400 MB × 4 zip, streaming split | 3.2 MB | **1270 MB** (was 2533 MB before streaming) |
+| the same set extracted from `.001`, no reassembly | 6.2 MB | 2459 MB = 1266 MB volumes + 1193 MB output |
+
+Memory does not scale with the input: the 7z number is the LZMA2 dictionary for that level, a fixed cost.
+Only the top end of xz / zstd asks for real memory (xz `-9` ≈ 611 MB, zstd `-22` ≈ 836 MB, zstd `-19` ≈ 92 MB),
+which is a property of the codec rather than of the file being compressed.
+
 ## Project layout
 
 ```
@@ -60,6 +84,7 @@ wispzip/
 ├── Cargo.toml               # Rust workspace (release: lto + opt-level=s + strip)
 ├── crates/
 │   ├── wispzip-core/        # Core engine: orchestration, formats, progress, cancel, safety
+│   │   ├── src/source.rs    # ArchiveSource: one file or a volume set behind a single Read + Seek
 │   │   └── src/formats/     # One module per format (zip/tar/streams/sevenz/rar),
 │   │                        # each exposing write/extract/list — adding a format = adding a module
 │   └── wispzip-cli/         # CLI shell (clap)
@@ -74,7 +99,7 @@ Requires Rust (stable), Node 20+, and pnpm.
 ```bash
 pnpm install          # frontend dependencies
 pnpm tauri dev        # desktop dev mode (vite + cargo running together)
-cargo test -p wispzip-core   # core engine tests (~80)
+cargo test -p wispzip-core   # core engine tests (104)
 
 # Three test layers:
 #   unit tests (inline in src/)  — sniffing, path safety, volumes, progress, time conversion
@@ -109,7 +134,7 @@ wispzip extract backup.zip -o /target/dir      # extract
 wispzip x legacy.zip --encoding gbk            # legacy GBK filenames
 wispzip x big.7z --entry dir/file.txt          # extract selected entries only
 wispzip c -o backup.7z --split 100M data/      # 100 MB volumes: backup.7z.001, .002, …
-wispzip x backup.7z.001                        # extract a split archive (auto-reassembled)
+wispzip x backup.7z.001                        # extract a split archive (streamed, no reassembly)
 wispzip l backup.rar                           # read-only rar preview
 wispzip x backup.rar -p secret                 # extract with a password
 ```

@@ -7,7 +7,8 @@
 CLI 只是薄壳，共享同一引擎。
 
 - 桌面端：**Tauri 2 + Vue 3 + TypeScript**
-- 核心引擎：**纯 Rust**（`wispzip-core`），流式处理，GB 级文件不爆内存
+- 核心引擎：**纯 Rust**（`wispzip-core`），端到端流式，4.5 GiB 文件下峰值内存仍在个位数 MB，
+  且不随文件大小增长（实测数据见[性能](#性能)）
 
 ## 下载与安装
 
@@ -34,7 +35,7 @@ xattr -cr /Applications/WispZip.app
 | gz / zst / xz / bz2 | ✅ | ✅ | 单文件流压缩（xz 高压缩、bz2 平衡），保留原文件名去后缀 |
 | 7z | ✅ | ✅ | LZMA2 0–9；AES-256 密码（内容加密，文件头可无密码列出）；保留 Unix 权限位；含 AES-256 加密包；`-mhe=on` 加密文件头的包带密码可预览（`wispzip l -p`） |
 | rar | ➖ | ✅ | 解压 rar4/rar5（含加密包，`unrar` 库）；压缩为专有格式不提供 |
-| 分卷 | ✅ | ✅ | `--split 100M` 拆成 `.001/.002/…` 字节级分卷，解压时透明重组，任意内部格式 |
+| 分卷 | ✅ | ✅ | `--split 100M` 拆成 `.001/.002/…` 字节级分卷，**写入与读取都走同一条流**，两端都不生成整包临时文件；任意内部格式 |
 
 通用能力：
 
@@ -46,7 +47,11 @@ xattr -cr /Applications/WispZip.app
 - **安全**：zip-slip 防护（拒绝 `../`、绝对路径、盘符），写盘前全部走路径校验
 - **重名策略**：跳过 / 覆盖 / 自动改名 `name (1).ext`
 - **GBK 文件名兼容**：中文 Windows 工具打包的 zip 不会乱码
-- **分卷压缩**：`--split 100M` 产出 `backup.7z.001/.002/…`，解压任一分卷自动重组；缺卷、跳号有明确报错
+- **分卷压缩，两端都流式**：`--split 100M` 产出 `backup.7z.001/.002/…`。压缩时把归档的逻辑字节流
+  直接映射到各分卷文件，解压时用一个可寻址读取器横跨整个卷集，因此两个方向都不会先在磁盘上落一份
+  完整归档——峰值磁盘约为归档体积的 1 倍，而不是 2 倍，临时目录里也不留东西。内部格式按**逻辑名**
+  判定（`backup.tar.gz.001` 识别为 tar.gz，而不是裸 gz 单流）；缺卷、跳号有明确报错。唯一例外是 RAR：
+  UnRAR 库只接受真实文件路径，RAR 分卷仍会先拼接再解压
 - **桌面端集成**：
   - 悬浮窗主界面：拖普通文件 → 自动进压缩确认页；拖压缩包 → 自动进解压确认页；确认页只问「叫什么 / 放哪里」，格式、等级、密码、分卷全部收在折叠的"高级配置"里
   - 执行页支持**暂停 / 继续 / 取消**，显示进度、速度与剩余时间；完成页给出压缩比与"打开文件夹"
@@ -57,6 +62,23 @@ xattr -cr /Applications/WispZip.app
   - **Windows 右键菜单**（NSIS 安装器自动注册）：文件/文件夹「压缩为 ZIP」，压缩包「解压到当前文件夹」
 - CLI 快捷语义：`wispzip c <文件>` 省略 `-o` 时自动写 `<文件>.zip`；`wispzip x <包> --here` 解压到当前文件夹
 
+## 性能
+
+macOS aarch64、release 构建下实测：峰值内存取自 `/usr/bin/time -l`，峰值磁盘用 `du` 轮询采样，
+均为观测值而非估算。
+
+| 场景 | 峰值内存 | 峰值磁盘 |
+|---|---|---|
+| zip，4.5 GiB，Deflate level 1 —— 压缩 / 解压 | 3.2 MB / 3.0 MB | — |
+| tar.gz，4.5 GiB —— 压缩 / 解压 | 3.1 MB / 2.7 MB | — |
+| 7z，4.5 GiB，LZMA2 level 6 —— 压缩 / 解压 | 95 MB / 11 MB | — |
+| 1.2 GB → 400 MB × 4 的 zip，流式分卷压缩 | 3.2 MB | **1270 MB**（流式改造前为 2533 MB） |
+| 同一卷集从 `.001` 解压，不重组 | 6.2 MB | 2459 MB = 卷 1266 MB + 输出 1193 MB |
+
+内存不随输入规模增长：7z 那一项是所选等级下 LZMA2 字典的固定开销。真正吃内存的只有 xz / zstd 的
+最高档（xz `-9` 约 611 MB、zstd `-22` 约 836 MB、zstd `-19` 约 92 MB），这是编解码算法的特性，
+与待压缩文件大小无关。
+
 ## 目录结构
 
 ```
@@ -64,6 +86,7 @@ wispzip/
 ├── Cargo.toml               # Rust workspace（release: lto + opt-level=s + strip）
 ├── crates/
 │   ├── wispzip-core/        # 核心引擎：编排、格式实现、进度、取消、安全
+│   │   ├── src/source.rs    # ArchiveSource：单个文件或整个卷集，统一成 Read + Seek
 │   │   └── src/formats/     # 每个格式一个模块（zip/tar/streams/sevenz/rar），
 │   │                        # 统一暴露 write/extract/list，新增格式只需加模块
 │   └── wispzip-cli/         # CLI 壳（clap）
@@ -78,7 +101,7 @@ wispzip/
 ```bash
 pnpm install          # 前端依赖
 pnpm tauri dev        # 桌面端开发模式（vite + cargo 同时跑）
-cargo test -p wispzip-core   # 核心引擎测试（约 80 个）
+cargo test -p wispzip-core   # 核心引擎测试（104 个）
 
 # 测试分三层：
 #   单元测试（src 内联）    —— 嗅探、路径安全、分卷、进度、时间换算等
@@ -113,7 +136,7 @@ wispzip extract backup.zip -o 目标目录         # 解压
 wispzip x legacy.zip --encoding gbk            # 老 GBK 文件名
 wispzip x big.7z --entry dir/file.txt          # 只解压部分条目
 wispzip c -o backup.7z --split 100M data/      # 100MB 分卷：backup.7z.001 .002 …
-wispzip x backup.7z.001                        # 解压分卷（自动重组）
+wispzip x backup.7z.001                        # 解压分卷（流式读取，不重组整包）
 wispzip l backup.rar                           # rar 只读预览
 wispzip x backup.rar -p secret                 # 带密码解压
 ```
