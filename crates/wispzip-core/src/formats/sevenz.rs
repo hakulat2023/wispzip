@@ -193,7 +193,7 @@ where
         {
             let mut r = shared2.borrow_mut();
             r.files_done += 1;
-            r.report(true);
+            r.report(false);
         }
         st2.borrow_mut().files += 1;
         // All selected entries are done: stop decoding and skip the rest of the archive

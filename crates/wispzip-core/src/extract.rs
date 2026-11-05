@@ -2,6 +2,7 @@
 //! shared on-disk machinery (conflict policy, zip-slip-safe targets, metadata
 //! restore) that every format module builds on.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -211,6 +212,37 @@ pub(crate) fn ensure_parent(target: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Per-extraction cache of directories that have already been created.
+///
+/// `create_dir_all` stats (and on some platforms tries to `mkdir`) every path
+/// component. A source tarball with thousands of files nested 6-9 levels deep
+/// otherwise repeats that whole walk once per file, which is pure overhead.
+/// The cache lives for a single extraction, so a later job never sees stale
+/// entries.
+pub(crate) struct ParentDirs(HashSet<PathBuf>);
+
+impl ParentDirs {
+    pub(crate) fn new() -> Self {
+        Self(HashSet::new())
+    }
+
+    /// Create `dir` (including parents) only the first time it is requested.
+    pub(crate) fn create(&mut self, dir: &Path) -> Result<()> {
+        if !dir.as_os_str().is_empty() && self.0.insert(dir.to_path_buf()) {
+            fs::create_dir_all(dir).map_err(|e| io_err(e, dir))?;
+        }
+        Ok(())
+    }
+
+    /// Ensure the parent directory of `target` exists.
+    pub(crate) fn ensure(&mut self, target: &Path) -> Result<()> {
+        match target.parent() {
+            Some(p) => self.create(p),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Tracks the selected entries during extraction so iteration can stop as

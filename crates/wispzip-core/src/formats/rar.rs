@@ -85,7 +85,7 @@ where
         {
             let mut r = shared.borrow_mut();
             r.current = Some(name.clone());
-            r.report(true);
+            r.report(false);
         }
         let target = match opt.resolve(&name)? {
             TargetAction::Write(t) => t,
@@ -109,7 +109,7 @@ where
             let mut r = shared.borrow_mut();
             r.files_done += 1;
             r.processed += size;
-            r.report(true);
+            r.report(false);
         }
         // All selected entries have been extracted: stop iterating the remaining entries
         if sel.settled(&name) { break; }
