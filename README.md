@@ -9,9 +9,16 @@ The architecture follows a **"one core + multiple thin shells"** pattern: all bu
 - Desktop: **Tauri 2 + Vue 3 + TypeScript**
 - Core engine: **pure Rust** (`wispzip-core`), streaming — GB-scale archives without blowing up memory
 
+<p align="center">
+  <img src="site/shots/screenshot-home-en.png" width="49%" alt="WispZip home window">
+  <img src="site/shots/screenshot-extract-en.png" width="49%" alt="Extract confirmation">
+</p>
+
 ## Download & Install
 
 Prebuilt packages (dmg / msi / deb / AppImage) are attached to [Releases](https://github.com/hakulat2023/wispzip/releases).
+A [product page](https://hakulat2023.github.io/wispzip/) with localized screenshots is also available.
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 **macOS first-launch note:** the app is not notarized by Apple (no developer account), so a dmg / zip downloaded from the internet carries the quarantine attribute. The first launch may report **"damaged and can't be opened"** or **"cannot verify the developer"**. Either fix works:
 
@@ -38,7 +45,8 @@ General capabilities:
 
 - **Content preview** — list entries (name / size / time) without extracting, and pick a subset to extract
 - **Progress & cancel** — entry-level and stream-level checkpoints; both the desktop app and the CLI can interrupt immediately
-- **Automatic multithreading** — zip extraction derives its concurrency from entry count / total size / CPU cores / system load (enabled at ≥16 entries and ≥1 MB total, falling back to single-threaded when the system is busy), scheduling large files first; tar / 7z / rar stay serial due to format and decoder constraints
+- **Automatic multithreading** — zip extraction derives its concurrency from entry count / total size / CPU cores / system load (enabled at ≥16 entries and ≥1 MB total, falling back to single-threaded when the system is busy), scheduling large files first
+- **Parallel small-file writes for tar** — the tar / gzip stream is still decoded sequentially, but entries ≤64 KiB are handed to a bounded worker pool (64-entry queue, ~4 MiB) that does create / write / chmod / utime in parallel; larger files keep the O(1) streaming write path. Default is `min(cores, 4)`, overridable with `WISPZIP_TAR_WORKERS=1..8`. Parent directories are cached and progress events throttled (80 ms / 1 MiB). 7z and rar stay serial because of their decoders and solid-folder layouts
 - **Safety** — zip-slip protection (rejects `../`, absolute paths, drive letters); every write goes through path validation first
 - **Name conflicts** — skip / overwrite / auto-rename as `name (1).ext`
 - **GBK filename compatibility** — zips packed by Chinese Windows tools won't garble
@@ -75,6 +83,25 @@ for peak disk — these are observations, not estimates.
 Memory does not scale with the input: the 7z number is the LZMA2 dictionary for that level, a fixed cost.
 Only the top end of xz / zstd asks for real memory (xz `-9` ≈ 611 MB, zstd `-22` ≈ 836 MB, zstd `-19` ≈ 92 MB),
 which is a property of the codec rather than of the file being compressed.
+
+### Small-file extraction (v0.2.0)
+
+CLI benchmark on the shared `wispzip-core` engine, macOS aarch64, cold output
+directory. Sample: a source tarball with 13,572 files / 490 MiB unpacked
+(61.8% ≤ 4 KiB, 97.4% ≤ 64 KiB) plus one 198 MB file. GUI timings are not measured.
+
+| Extractor | Best time |
+|---|---|
+| WispZip 0.1.0 | 3.45 s |
+| system bsdtar | 2.74 s |
+| WispZip 0.2.0, 1 worker | 2.75 s |
+| WispZip 0.2.0, 2 workers | 1.74 s |
+| **WispZip 0.2.0, 4 workers (default)** | **1.62 s** |
+| WispZip 0.2.0, 8 workers | 1.96 s |
+
+Eight workers are slower than four: with thousands of tiny files the extra
+metadata contention outweighs the parallel writes, so the default is capped
+at `min(cores, 4)`.
 
 ## Project layout
 

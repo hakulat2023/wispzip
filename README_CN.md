@@ -9,9 +9,15 @@ CLI 只是薄壳，共享同一引擎。
 - 桌面端：**Tauri 2 + Vue 3 + TypeScript**
 - 核心引擎：**纯 Rust**（`wispzip-core`），流式处理，GB 级文件不爆内存
 
+<p align="center">
+  <img src="site/shots/screenshot-home-zh.png" width="49%" alt="WispZip 主界面">
+  <img src="site/shots/screenshot-extract-zh.png" width="49%" alt="解压确认页">
+</p>
+
 ## 下载与安装
 
-预编译产物（dmg / msi / deb / AppImage）见 [Releases](https://github.com/hakulat2023/wispzip/releases)。
+预编译产物（dmg / msi / deb / AppImage）见 [Releases](https://github.com/hakulat2023/wispzip/releases)，
+带界面截图的[产品页](https://hakulat2023.github.io/wispzip/)也可直接查看；版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 **macOS 首次打开必读：** App 未经 Apple 公证（无开发者账号），从网上下载的 dmg / zip 自带隔离属性，
 首次打开可能提示 **"已损坏，无法打开"** 或 **"无法验证开发者"**。任选其一解决：
@@ -41,8 +47,12 @@ xattr -cr /Applications/WispZip.app
 - **内容预览**：不解压即可查看条目列表（名称 / 大小 / 时间），支持勾选部分条目解压
 - **进度与取消**：条目级 + 流级检查点，桌面端与 CLI 都能即时中断
 - **自动多线程**：zip 解压按条目数 / 总大小 / CPU 核数 / 系统负载自动决定
-  并发度（条目 ≥16 且总量 ≥1MB 才启用，系统繁忙时自动降为单线程），
-  大文件优先调度；tar/7z/rar 受格式与解码器限制保持串行
+  并发度（条目 ≥16 且总量 ≥1MB 才启用，系统繁忙时自动降为单线程），大文件优先调度
+- **tar 小文件并行落盘**：tar/gzip 流仍顺序解码，但 ≤64 KiB 的条目交给有界 worker 池
+  （队列 64 条、约 4 MiB）并行执行建文件 / 写入 / 改权限 / 改时间；更大的文件仍走
+  O(1) 内存的流式写入。默认并发 `min(核数, 4)`，可用 `WISPZIP_TAR_WORKERS=1..8`
+  覆盖；父目录创建做缓存，进度事件按 80 ms / 1 MiB 节流。7z / rar 受解码器与
+  solid 压缩块限制，仍保持串行
 - **安全**：zip-slip 防护（拒绝 `../`、绝对路径、盘符），写盘前全部走路径校验
 - **重名策略**：跳过 / 覆盖 / 自动改名 `name (1).ext`
 - **GBK 文件名兼容**：中文 Windows 工具打包的 zip 不会乱码
@@ -77,6 +87,24 @@ macOS aarch64、release 构建下实测：峰值内存取自 `/usr/bin/time -l`�
 内存不随输入规模增长：7z 那一项是所选等级下 LZMA2 字典的固定开销。真正吃内存的只有 xz / zstd 的
 最高档（xz `-9` 约 611 MB、zstd `-22` 约 836 MB、zstd `-19` 约 92 MB），这是编解码算法的特性，
 与待压缩文件大小无关。
+
+### 小文件解压（v0.2.0）
+
+同一 `wispzip-core` 引擎上的 CLI 实测：macOS aarch64、release 构建、每次清空输出目录取最优值。
+样本为一份源码包，13,572 个文件 / 解压后 490 MiB（61.8% ≤ 4 KiB、97.4% ≤ 64 KiB），
+另含一个 198 MB 大文件。桌面端 GUI 未计时。
+
+| 解压方式 | 最优耗时 |
+|---|---|
+| WispZip 0.1.0 | 3.45 s |
+| 系统 bsdtar | 2.74 s |
+| WispZip 0.2.0，1 worker | 2.75 s |
+| WispZip 0.2.0，2 workers | 1.74 s |
+| **WispZip 0.2.0，4 workers（默认）** | **1.62 s** |
+| WispZip 0.2.0，8 workers | 1.96 s |
+
+8 线程反而比 4 线程慢：小文件成千上万时，额外的元数据竞争吃掉了并行写入的收益，
+因此默认上限锁在 `min(核数, 4)`。
 
 ## 目录结构
 
