@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WispZip — 轻量级文件压缩 / 解压工具</title>
-<meta name="description" content="WispZip 是极简的开源文件压缩 / 解压工具：拖拽优先、右键即用，纯 Rust 流式引擎让 GB 级归档只占几 MB 内存。">
+<title data-i18n="pageTitle">WispZip — A lightweight archiver for macOS, Windows and Linux</title>
+<meta id="meta-desc" name="description" content="WispZip is a minimal open-source archiver: drag and drop, native context menus, and a pure-Rust streaming engine that handles gigabyte archives in a few megabytes of RAM.">
 <meta name="theme-color" content="#0f6e56">
 <link rel="icon" href="icon.png">
 <style>
@@ -62,11 +62,16 @@
   footer{padding:36px 0 48px;color:var(--muted);font-size:13px}
   .foot{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
   .foot span{margin-left:auto}
+  .shot-wrap{max-width:900px;margin:44px auto 0}
+  .shot-wrap-sm{max-width:820px;margin-top:44px}
+  .shot{display:block;width:100%;height:auto;background:#131a22;border:1px solid rgba(15,30,25,.12);border-radius:16px;box-shadow:0 28px 64px rgba(15,30,25,.18),0 4px 12px rgba(15,30,25,.08)}
+  .shot-cap{text-align:center;font-size:13px;color:var(--muted);margin:14px 0 0}
   @media(max-width:760px){
     .grid,.steps{grid-template-columns:1fr}
     nav{display:none}
     section{padding:44px 0}
     .hero{padding:60px 0 52px}
+    .shot-wrap{margin-top:28px}
   }
 </style>
 </head>
@@ -76,54 +81,62 @@
   <div class="wrap bar">
     <a class="brand" href="#top"><img src="icon.png" alt="">WispZip</a>
     <nav>
-      <a href="#features" data-i18n="navFeatures">特性</a>
-      <a href="#formats" data-i18n="navFormats">格式</a>
-      <a href="#performance" data-i18n="navPerf">性能</a>
-      <a href="#download" data-i18n="navDownload">下载</a>
+      <a href="#features" data-i18n="navFeatures">Features</a>
+      <a href="#formats" data-i18n="navFormats">Formats</a>
+      <a href="#performance" data-i18n="navPerf">Benchmarks</a>
+      <a href="#download" data-i18n="navDownload">Download</a>
     </nav>
     <a class="brand" style="font-size:14px;font-weight:400;color:var(--muted)" href="https://github.com/hakulat2023/wispzip">GitHub</a>
-    <button class="lang" id="lang" type="button">EN</button>
+    <button class="lang" id="lang" type="button">中文</button>
   </div>
 </header>
 
 <section class="hero" id="top">
   <div class="wrap">
-    <h1 data-i18n="heroTitle">压缩这件事，可以很轻</h1>
-    <p class="sub" data-i18n="heroSub">WispZip 是开源的极简文件压缩 / 解压工具：主界面只有一扇悬浮窗，拖进去就给确认页，格式、密码、分卷都收进折叠的「高级」。桌面壳是 Tauri 2 + Vue 3，下面是纯 Rust 的流式引擎。</p>
+    <h1 data-i18n="heroTitle">Archiving, without the weight</h1>
+    <p class="sub" data-i18n="heroSub">WispZip is a small open-source archiver: one floating window, drag a file in and you get a single confirmation page. Formats, passwords and split volumes live under a collapsed Advanced panel. Tauri 2 + Vue 3 on top of a pure-Rust streaming engine.</p>
     <div class="cta">
-      <a class="btn primary" id="download-btn" href="https://github.com/hakulat2023/wispzip/releases" data-i18n="btnDownload">查看 Releases</a>
-      <a class="btn ghost" href="https://github.com/hakulat2023/wispzip" data-i18n="btnSource">查看源码</a>
+      <a class="btn primary" id="download-btn" href="https://github.com/hakulat2023/wispzip/releases" data-i18n="btnDownload">View releases</a>
+      <a class="btn ghost" href="https://github.com/hakulat2023/wispzip" data-i18n="btnSource">View source</a>
     </div>
-    <p class="note" id="release-note" style="margin-top:-16px;margin-bottom:28px" data-i18n="releaseChecking">正在检查最新发布…</p>
+    <p class="note" id="release-note" style="margin-top:-16px;margin-bottom:28px" data-i18n="releaseChecking">Checking the latest release…</p>
     <div class="badges">
-      <div class="badge"><b>5.7 MB</b><span data-i18n="badge1">macOS 主二进制</span></div>
-      <div class="badge"><b>3.2 MB</b><span data-i18n="badge2">压 4.5 GiB 的峰值内存</span></div>
-      <div class="badge"><b>16+</b><span data-i18n="badge3">可识别的归档格式</span></div>
+      <div class="badge"><b>5.7 MB</b><span data-i18n="badge1">macOS binary</span></div>
+      <div class="badge"><b>3.2 MB</b><span data-i18n="badge2">peak RSS for a 4.5 GiB zip</span></div>
+      <div class="badge"><b>16+</b><span data-i18n="badge3">recognised archive formats</span></div>
     </div>
+    <div class="shot-wrap">
+      <img class="shot" id="shot-home" src="shots/screenshot-home-en.png" alt="WispZip home window with the drop zone and compress / open actions" width="1600" height="1066" loading="lazy">
+    </div>
+    <p class="shot-cap" data-i18n="shotHomeCap">The home window: drop a file to get a confirmation page; formats and advanced options stay collapsed.</p>
   </div>
 </section>
 
 <section id="features">
   <div class="wrap">
-    <h2 data-i18n="featTitle">少点几下，别爆内存</h2>
-    <p class="sub" data-i18n="featSub">常见操作不需要打开设置；真正复杂的格式能力留给 CLI 和折叠面板。</p>
+    <h2 data-i18n="featTitle">Fewer clicks, no memory spikes</h2>
+    <p class="sub" data-i18n="featSub">Everyday work needs no settings dialog; the deeper format controls stay in the CLI and the collapsed panel.</p>
     <div class="grid">
-      <div class="card"><div class="dot"></div><h3 data-i18n="card1t">拖拽即用</h3><p data-i18n="card1d">拖普通文件进压缩确认页，拖归档进解压确认页。确认页只问「叫什么 / 放哪里」，其余全在高级里。</p></div>
-      <div class="card"><div class="dot"></div><h3 data-i18n="card2t">长在系统里</h3><p data-i18n="card2d">macOS 访达右键快速操作、Windows 右键菜单、双击关联文件直接进解压确认页；托盘常驻，最近任务可回看。</p></div>
-      <div class="card"><div class="dot"></div><h3 data-i18n="card3t">流式引擎</h3><p data-i18n="card3d">内存不随归档体积增长，可暂停 / 继续 / 取消；zip-slip 防护、GBK 文件名兼容、重名自动改名。</p></div>
+      <div class="card"><div class="dot"></div><h3 data-i18n="card1t">Drag and drop</h3><p data-i18n="card1d">Drop plain files for compression, archives for extraction. The confirmation page only asks for a name and a destination.</p></div>
+      <div class="card"><div class="dot"></div><h3 data-i18n="card2t">Lives in the OS</h3><p data-i18n="card2d">macOS Finder Quick Actions, Windows context menus, double-click an archive to go straight to extraction, plus a tray and recent jobs.</p></div>
+      <div class="card"><div class="dot"></div><h3 data-i18n="card3t">Streaming engine</h3><p data-i18n="card3d">Memory does not scale with input size. Pause, resume, cancel, zip-slip protection, GBK filenames and automatic conflict renaming.</p></div>
     </div>
     <div class="steps">
-      <div class="step"><span>01</span><p data-i18n="step1">把文件或归档拖进悬浮窗</p></div>
-      <div class="step"><span>02</span><p data-i18n="step2">确认名字与位置，需要时展开高级</p></div>
-      <div class="step"><span>03</span><p data-i18n="step3">看进度、速度、ETA，完成后打开文件夹</p></div>
+      <div class="step"><span>01</span><p data-i18n="step1">Drop a file or an archive into the floating window</p></div>
+      <div class="step"><span>02</span><p data-i18n="step2">Confirm the name and destination, expand Advanced if needed</p></div>
+      <div class="step"><span>03</span><p data-i18n="step3">Watch progress, speed and ETA, then open the output folder</p></div>
     </div>
+    <div class="shot-wrap shot-wrap-sm">
+      <img class="shot" id="shot-extract" src="shots/screenshot-extract-en.png" alt="WispZip extract confirmation with destination, conflict policy, encoding and password" width="1600" height="1066" loading="lazy">
+    </div>
+    <p class="shot-cap" data-i18n="shotExtractCap">Double-click an archive or use Open With and land straight on the extract confirmation — no need to open the home window first.</p>
   </div>
 </section>
 
 <section id="formats">
   <div class="wrap">
-    <h2 data-i18n="fmtTitle">格式支持</h2>
-    <p class="sub" data-i18n="fmtSub">一套 Rust 核心同时供桌面端与 CLI 使用，行为一致。</p>
+    <h2 data-i18n="fmtTitle">Format support</h2>
+    <p class="sub" data-i18n="fmtSub">One Rust core shared by the desktop app and the CLI, so both behave the same way.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Format</th><th>Compress</th><th>Extract</th><th>Notes</th></tr></thead>
@@ -138,14 +151,14 @@
         </tbody>
       </table>
     </div>
-    <p class="note" data-i18n="fmtNote">分卷压缩与解压都不生成整包临时文件，峰值磁盘约为归档体积的 1 倍而不是 2 倍。RAR 是唯一例外：UnRAR 只接受真实文件路径，卷集仍需先拼接。</p>
+    <p class="note" data-i18n="fmtNote">Split volumes are streamed on both write and read, with no full-size temporary archive: peak disk is about 1x the archive, not 2x. RAR is the exception because UnRAR requires a real file path.</p>
   </div>
 </section>
 
 <section id="performance">
   <div class="wrap">
-    <h2 data-i18n="perfTitle">实测数据</h2>
-    <p class="sub" data-i18n="perfSub">观测值，不是估算。macOS aarch64、release 构建；峰值内存取自 /usr/bin/time -l，峰值磁盘用 du 轮询采样。</p>
+    <h2 data-i18n="perfTitle">Measured, not estimated</h2>
+    <p class="sub" data-i18n="perfSub">macOS aarch64, release build. Peak RSS from /usr/bin/time -l; peak disk sampled with du.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Workload</th><th>Peak RSS</th><th>Peak disk</th></tr></thead>
@@ -166,22 +179,22 @@
         </tbody>
       </table>
     </div>
-    <p class="note" data-i18n="perfNote">速度数据来自同一核心引擎的 CLI 基准测试（冷目录、多轮取最优），GUI 未做计时实测。7z 那项内存是所选等级下 LZMA2 字典的固定开销，与输入体积无关。</p>
+    <p class="note" data-i18n="perfNote">Timings come from CLI benchmarks on the same core engine (cold output directory, best of several runs); the GUI was not timed. The 7z figure is the fixed LZMA2 dictionary cost at that level, independent of input size.</p>
   </div>
 </section>
 
 <section id="download">
   <div class="wrap">
-    <h2 data-i18n="dlTitle">下载与安装</h2>
-    <p class="sub" data-i18n="dlSub">桌面端提供 macOS / Windows / Linux 产物，CLI 可单独编译。全部代码 MIT 许可。</p>
+    <h2 data-i18n="dlTitle">Download and install</h2>
+    <p class="sub" data-i18n="dlSub">Desktop builds for macOS, Windows and Linux; the CLI can be built separately. All code is MIT licensed.</p>
     <div class="cta" style="justify-content:flex-start">
       <a class="btn primary" id="download-btn-2" href="https://github.com/hakulat2023/wispzip/releases">Releases</a>
       <a class="btn ghost" href="https://github.com/hakulat2023/wispzip#build">Build from source</a>
     </div>
     <p class="note" id="release-note-2"></p>
     <div class="callout">
-      <strong data-i18n="gateTitle">macOS 首次打开请先读</strong><br>
-      <span data-i18n="gateBody1">App 未经 Apple 公证（无开发者账号），下载后带隔离属性，首次打开可能提示「已损坏」或「无法验证开发者」。执行一次 </span><code>xattr -cr /Applications/WispZip.app</code><span data-i18n="gateBody2">，或右键 App → 打开即可，之后不再提示。Windows / Linux 产物解压即用。</span>
+      <strong data-i18n="gateTitle">macOS first launch: read this</strong><br>
+      <span data-i18n="gateBody1">The app is not notarized by Apple (no developer account), so a downloaded build carries the quarantine attribute and may be reported as damaged. Run </span><code>xattr -cr /Applications/WispZip.app</code><span data-i18n="gateBody2"> once, or right-click the app and choose Open. Windows and Linux builds run as-is.</span>
     </div>
   </div>
 </section>
@@ -198,6 +211,12 @@
 <script>
 var I18N = {
   zh: {
+    pageTitle:"WispZip — 轻量级文件压缩 / 解压工具",
+    pageDesc:"WispZip 是极简的开源文件压缩 / 解压工具：拖拽优先、右键即用，纯 Rust 流式引擎让 GB 级归档只占几 MB 内存。",
+    shotHomeCap:"主界面：拖进去就给确认页，格式与高级选项收在折叠面板里。",
+    shotExtractCap:"双击归档或用「打开方式」，直接进解压确认页——不用先开主窗口。",
+    shotHomeAlt:"WispZip 主界面：拖拽区与压缩 / 打开压缩包入口",
+    shotExtractAlt:"WispZip 解压确认页：目标路径、重名策略、编码与密码",
     navFeatures:"特性", navFormats:"格式", navPerf:"性能", navDownload:"下载",
     heroTitle:"压缩这件事，可以很轻",
     heroSub:"WispZip 是开源的极简文件压缩 / 解压工具：主界面只有一扇悬浮窗，拖进去就给确认页，格式、密码、分卷都收进折叠的「高级」。桌面壳是 Tauri 2 + Vue 3，下面是纯 Rust 的流式引擎。",
@@ -222,6 +241,12 @@ var I18N = {
     releaseFail:"发布信息暂时读不到，点按钮可直接前往 Releases 页。"
   },
   en: {
+    pageTitle:"WispZip — A lightweight archiver for macOS, Windows and Linux",
+    pageDesc:"WispZip is a minimal open-source archiver: drag and drop, native context menus, and a pure-Rust streaming engine that handles gigabyte archives in a few megabytes of RAM.",
+    shotHomeCap:"The home window: drop a file to get a confirmation page; formats and advanced options stay collapsed.",
+    shotExtractCap:"Double-click an archive or use Open With and land straight on the extract confirmation — no need to open the home window first.",
+    shotHomeAlt:"WispZip home window with the drop zone and compress / open actions",
+    shotExtractAlt:"WispZip extract confirmation with destination, conflict policy, encoding and password",
     navFeatures:"Features", navFormats:"Formats", navPerf:"Benchmarks", navDownload:"Download",
     heroTitle:"Archiving, without the weight",
     heroSub:"WispZip is a small open-source archiver: one floating window, drag a file in and you get a single confirmation page. Formats, passwords and split volumes live under a collapsed Advanced panel. Tauri 2 + Vue 3 on top of a pure-Rust streaming engine.",
@@ -246,7 +271,7 @@ var I18N = {
     releaseFail:"Release info unavailable right now; the button takes you straight to the Releases page."
   }
 };
-var lang = 'zh';
+var lang = 'en';
 function applyLang(){
   var d = I18N[lang];
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
@@ -255,6 +280,17 @@ function applyLang(){
     if (v !== undefined) el.textContent = v;
   });
   document.getElementById('lang').textContent = lang === 'zh' ? 'EN' : '中文';
+  document.title = d.pageTitle;
+  var md = document.getElementById('meta-desc');
+  if (md) md.content = d.pageDesc;
+  var sfx = lang === 'zh' ? 'zh' : 'en';
+  [['shot-home', 'screenshot-home-', 'shotHomeAlt'], ['shot-extract', 'screenshot-extract-', 'shotExtractAlt']]
+    .forEach(function(item){
+      var img = document.getElementById(item[0]);
+      if (!img) return;
+      img.src = 'shots/' + item[1] + sfx + '.png';
+      img.alt = d[item[2]];
+    });
 }
 document.getElementById('lang').addEventListener('click', function(){
   lang = lang === 'zh' ? 'en' : 'zh';
