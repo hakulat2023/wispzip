@@ -101,19 +101,22 @@ jobs:
         id: collect
         shell: bash
         run: |
-          mkdir -p dist
+          # Keep installers in their own directory: dist/ is also the Vite
+          # frontend output, so uploading dist/* would attach index.html as
+          # a release asset.
+          mkdir -p release-assets
           found=$(find target/*/release/bundle target/release/bundle \
             -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.msi" \
                -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" \
                -o -name "*.AppImage" \) 2>/dev/null || true)
-          echo "$found" | tee /dev/stderr | xargs -I{} cp {} dist/ || true
-          echo "files=$(ls dist | wc -l)" >> "$GITHUB_OUTPUT"
+          echo "$found" | tee /dev/stderr | xargs -I{} cp {} release-assets/ || true
+          echo "files=$(ls release-assets | wc -l)" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.os }}-${{ matrix.target }}
-          path: dist/*
+          path: release-assets/*
 
   release:
     needs: build
