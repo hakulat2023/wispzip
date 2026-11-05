@@ -713,17 +713,24 @@ pub fn run() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let _ = LAUNCH_ARGS.set(argv.clone());
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // second launch: forward its intent to the running instance
-            let _ = app.emit("wispzip:launch-args", argv[1..].to_vec());
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        }))
+        .plugin(tauri_plugin_opener::init());
+
+    // macOS reuses the running .app through the Finder Apple Event (RunEvent::Opened).
+    // The single-instance plugin's argv forwarding can swallow that event, so it is
+    // only installed on Windows/Linux, where associations arrive as CLI arguments.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        // second launch: forward its intent to the running instance
+        let _ = app.emit("wispzip:launch-args", argv[1..].to_vec());
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+
+    builder
         .manage(Jobs::default())
         .invoke_handler(tauri::generate_handler![
             detect_archive,

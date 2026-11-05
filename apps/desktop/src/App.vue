@@ -24,6 +24,7 @@ import {
   openEntry,
   statPath,
   launchArgs,
+  takeOpenedPaths,
   onProgress,
   onJobDone,
   onLaunchArgs,
@@ -333,6 +334,28 @@ async function handleLaunchFlow(args: string[]) {
   }
 }
 
+/**
+ * macOS file association ("Open With" / double click): go straight to the extract
+ * confirmation instead of landing on the home screen. The browser sits behind the
+ * dialog, so cancelling still leaves the archive open for preview.
+ * Rust re-emits the same paths once to cover the cold-start race, so de-dupe here.
+ */
+let lastAssoc = { path: "", at: 0 };
+async function openFromAssociation(paths: string[]) {
+  const path = paths[0];
+  if (!path) return;
+  const now = Date.now();
+  if (path === lastAssoc.path && now - lastAssoc.at < 2000) return;
+  lastAssoc = { path, at: now };
+  await openArchive(path);
+  screen.value = "browser";
+  if (!needsPassword.value) {
+    extractSelection.value = null;
+    extractHere.value = false;
+    extractOpen.value = true;
+  }
+}
+
 /* ================= wiring ================= */
 
 const unlisteners: (() => void)[] = [];
@@ -377,15 +400,16 @@ onMounted(async () => {
         if (ev.payload.type === "drop") void handleDroppedPaths(ev.payload.paths);
       }));
     }
-    unlisteners.push(await onOpenFile((paths) => {
-      if (paths[0]) void openArchive(paths[0]).then(() => { screen.value = "browser"; });
-    }));
+    unlisteners.push(await onOpenFile((paths) => void openFromAssociation(paths)));
     unlisteners.push(await onLaunchArgs((args) => void handleLaunchFlow(args)));
     unlisteners.push(await onOpenSettings(() => { settingsOpen.value = true; }));
     void handleLaunchFlow(await launchArgs());
-    // On a cold start the Opened event may precede listener registration; claim the cached one
-    const pending = await invoke<string[]>("take_opened_paths");
-    if (pending.length) void handleLaunchFlow(pending);
+    // On a cold start the Opened event may precede listener registration; claim the cached one.
+    // Wrapped so a mock/older backend without this command cannot abort the whole boot.
+    try {
+      const pending = await takeOpenedPaths();
+      if (pending.length) void openFromAssociation(pending);
+    } catch { /* no pending paths */ }
     if (isTauri) {
       if (isWin) {
         const unlisten = await syncMaximizedState();

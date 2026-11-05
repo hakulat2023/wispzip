@@ -145,6 +145,9 @@ export const resumeJob = (jobId: number) => invoke<boolean>("resume_job", { jobI
 
 export const launchArgs = () => invoke<string[]>("launch_args");
 
+/** Claim file paths cached by the Rust side before the webview was ready (macOS "Open With"). */
+export const takeOpenedPaths = () => invoke<string[]>("take_opened_paths");
+
 export function onLaunchArgs(cb: (args: string[]) => void): Promise<UnlistenFn> {
   return subscribe<string[]>("wispzip:launch-args", cb);
 }
