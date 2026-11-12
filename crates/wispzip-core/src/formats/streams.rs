@@ -36,8 +36,10 @@ where
     let mut cr = CountingReader::new(BufReader::new(f), shared.clone());
     let sink = match format {
         Format::Gz => {
-            let mut enc =
-                flate2::write::GzEncoder::new(sink, flate2::Compression::new(opt.level.min(9) as u32));
+            let mut enc = flate2::write::GzEncoder::new(
+                sink,
+                flate2::Compression::new(opt.level.min(9) as u32),
+            );
             io::copy(&mut cr, &mut enc).map_err(|er| io_err(er, &e.src))?;
             enc.finish().map_err(|er| io_err(er, &e.src))?
         }

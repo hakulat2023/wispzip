@@ -114,7 +114,7 @@ fn volume_index(path: &Path) -> Option<(PathBuf, u32)> {
     if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) || num.len() > 9 {
         return None;
     }
-    let stem = path.with_file_name(name[..dot].to_string());
+    let stem = path.with_file_name(&name[..dot]);
     Some((stem, num.parse().ok()?))
 }
 
@@ -124,10 +124,7 @@ fn volume_index(path: &Path) -> Option<(PathBuf, u32)> {
 /// file path — so those still pay a full-size temporary copy. Everything else
 /// reads through [`VolumeReader`].
 pub(crate) fn concatenate(set: &VolumeSet, tmp: &Path) -> Result<()> {
-    let mut w = BufWriter::with_capacity(
-        1 << 20,
-        File::create(tmp).map_err(|e| io_err(e, tmp))?,
-    );
+    let mut w = BufWriter::with_capacity(1 << 20, File::create(tmp).map_err(|e| io_err(e, tmp))?);
     for index in 1..=set.count {
         let part = volume_path(&set.stem, index);
         let mut f = File::open(&part).map_err(|e| io_err(e, &part))?;
@@ -220,7 +217,8 @@ impl Read for VolumeReader {
             let room = self.set.size_of(index).unwrap_or(0) - off;
             if room == 0 {
                 // Should not happen: locate() never returns an empty slot.
-                self.pos = self.set.start_of(index).unwrap_or(0) + self.set.size_of(index).unwrap_or(0);
+                self.pos =
+                    self.set.start_of(index).unwrap_or(0) + self.set.size_of(index).unwrap_or(0);
                 self.open = None;
                 continue;
             }
@@ -552,7 +550,9 @@ mod tests {
         // numeric suffix but no .001 sibling anywhere
         assert!(detect(Path::new("/x/photo.002")).unwrap().is_none());
         // directory does not exist
-        assert!(detect(Path::new("/nonexistent-dir-xyz/a.001")).unwrap().is_none());
+        assert!(detect(Path::new("/nonexistent-dir-xyz/a.001"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -584,7 +584,10 @@ mod tests {
             fs::write(dir.join(format!("a.{i:03}")), b"x").unwrap();
         }
         let err = detect(&dir.join("a.001")).unwrap_err();
-        assert!(err.to_string().contains("004"), "gap should point at 004, got {err}");
+        assert!(
+            err.to_string().contains("004"),
+            "gap should point at 004, got {err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -655,7 +658,10 @@ mod tests {
         assert_eq!(fs::metadata(dir.join("a.zip.001")).unwrap().len(), 4);
         assert_eq!(fs::metadata(dir.join("a.zip.002")).unwrap().len(), 4);
         assert_eq!(fs::metadata(dir.join("a.zip.003")).unwrap().len(), 2);
-        assert!(staged_parts(&dir).is_empty(), "no staged parts after finalize");
+        assert!(
+            staged_parts(&dir).is_empty(),
+            "no staged parts after finalize"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -667,7 +673,10 @@ mod tests {
         w.write_all(b"12345678").unwrap();
         w.finalize().unwrap();
         assert_eq!(read_volumes(&dir, "b.zip"), b"12345678");
-        assert!(!dir.join("b.zip.003").exists(), "exact multiple must not add .003");
+        assert!(
+            !dir.join("b.zip.003").exists(),
+            "exact multiple must not add .003"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -710,10 +719,19 @@ mod tests {
             let mut w = VolumeWriter::create(&stem, 4).unwrap();
             w.write_all(b"0123456789").unwrap();
             assert_eq!(staged_parts(&dir).len(), 3, "three volumes, all staged");
-            assert!(!dir.join("a.zip.001").exists(), "nothing committed while running");
+            assert!(
+                !dir.join("a.zip.001").exists(),
+                "nothing committed while running"
+            );
         }
-        assert!(staged_parts(&dir).is_empty(), "dropped writer cleans its parts up");
-        assert!(!dir.join("e.zip.001").exists(), "nothing is committed on drop");
+        assert!(
+            staged_parts(&dir).is_empty(),
+            "dropped writer cleans its parts up"
+        );
+        assert!(
+            !dir.join("e.zip.001").exists(),
+            "nothing is committed on drop"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -728,7 +746,10 @@ mod tests {
         w.write_all(b"12345").unwrap();
         w.finalize().unwrap();
         assert_eq!(read_volumes(&dir, "f.zip"), b"12345");
-        assert!(!dir.join("f.zip.003").exists(), "stale tail volume is removed");
+        assert!(
+            !dir.join("f.zip.003").exists(),
+            "stale tail volume is removed"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

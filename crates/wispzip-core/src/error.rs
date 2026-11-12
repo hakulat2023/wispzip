@@ -16,6 +16,11 @@ impl std::fmt::Display for CancelledIo {
 
 impl std::error::Error for CancelledIo {}
 
+/// Prefix of [`WispZipError::UnsafeEntry`]'s message. Shared with the 7z bridge,
+/// which carries the error through `sevenz_rust::Error::Other` and has to
+/// unwrap it again.
+pub(crate) const UNSAFE_ENTRY_PREFIX: &str = "unsafe entry path rejected (possible zip-slip): ";
+
 #[derive(Debug, Error)]
 pub enum WispZipError {
     #[error("operation cancelled")]
@@ -26,7 +31,7 @@ pub enum WispZipError {
     UnknownFormat(PathBuf),
     #[error("password required or incorrect: {0}")]
     PasswordRequired(String),
-    #[error("unsafe entry path rejected (possible zip-slip): {0}")]
+    #[error("{prefix}{0}", prefix = UNSAFE_ENTRY_PREFIX)]
     UnsafeEntry(String),
     #[error("io error at {}: {source}", path.display())]
     Io {
@@ -55,7 +60,7 @@ impl WispZipError {
 }
 
 pub(crate) fn cancel_io_error() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, CancelledIo)
+    io::Error::other(CancelledIo)
 }
 
 pub(crate) fn is_cancel_io(e: &io::Error) -> bool {

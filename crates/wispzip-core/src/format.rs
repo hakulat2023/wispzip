@@ -1,5 +1,5 @@
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::error::{io_err, Result, WispZipError};
 
@@ -156,7 +156,9 @@ pub fn detect(path: &Path) -> Result<(Format, Classification)> {
 /// Detect the format of a byte source. The logical archive name is tried
 /// first — a volume set called `backup.tar.gz.001` is a TarGz stream, not an
 /// unknown `001` file — then the magic bytes of the first volume.
-pub(crate) fn detect_source(src: &crate::source::ArchiveSource) -> Result<(Format, Classification)> {
+pub(crate) fn detect_source(
+    src: &crate::source::ArchiveSource,
+) -> Result<(Format, Classification)> {
     let logical = src.logical_path();
     let name = logical
         .file_name()
@@ -201,6 +203,10 @@ fn sniff(path: &Path) -> Result<(Format, Classification)> {
     }
     if starts(&[0x1F, 0x8B]) {
         return Ok((Format::Gz, Classification::SingleStream));
+    }
+    // zstd frame magic (0xFD2FB528 little-endian)
+    if starts(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        return Ok((Format::Zst, Classification::SingleStream));
     }
     // xz: FD 37 7A 58 5A 00 ("7zXZ" — note the lowercase z)
     if starts(&[0xFD, b'7', b'z', b'X', b'Z', 0x00]) {
@@ -266,7 +272,10 @@ mod sniff_tests {
             .unwrap()
             .write_all(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 1, 2, 3])
             .unwrap();
-        assert!(matches!(sniff(&xp), Ok((Format::Xz, Classification::SingleStream))));
+        assert!(matches!(
+            sniff(&xp),
+            Ok((Format::Xz, Classification::SingleStream))
+        ));
 
         let mut bp = dir.path().join("b");
         bp.set_file_name("b2");
@@ -274,7 +283,10 @@ mod sniff_tests {
             .unwrap()
             .write_all(b"BZh9xxxxxxx")
             .unwrap();
-        assert!(matches!(sniff(&bp), Ok((Format::Bz2, Classification::SingleStream))));
+        assert!(matches!(
+            sniff(&bp),
+            Ok((Format::Bz2, Classification::SingleStream))
+        ));
     }
 }
 
@@ -296,9 +308,15 @@ mod sniff_tests_more {
     fn sniff_all_magics() {
         use Classification::*;
         // zip local file header
-        assert!(matches!(probe(b"PK\x03\x04xxxx"), Ok((Format::Zip, Archive))));
+        assert!(matches!(
+            probe(b"PK\x03\x04xxxx"),
+            Ok((Format::Zip, Archive))
+        ));
         // zip empty archive (end-of-central-directory only)
-        assert!(matches!(probe(b"PK\x05\x06xxxx"), Ok((Format::Zip, Archive))));
+        assert!(matches!(
+            probe(b"PK\x05\x06xxxx"),
+            Ok((Format::Zip, Archive))
+        ));
         // 7z
         assert!(matches!(
             probe([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C].as_slice()),
@@ -308,6 +326,11 @@ mod sniff_tests_more {
         assert!(matches!(
             probe([0x1F, 0x8B, 0x08, 0x00].as_slice()),
             Ok((Format::Gz, SingleStream))
+        ));
+        // zstd frame magic
+        assert!(matches!(
+            probe([0x28, 0xB5, 0x2F, 0xFD, 0x24, 0x05].as_slice()),
+            Ok((Format::Zst, SingleStream))
         ));
         // xz
         assert!(matches!(
@@ -327,7 +350,10 @@ mod sniff_tests_more {
         assert!(probe(b"BZh0xxxx").is_err());
         // RAR4 vs RAR5 share the prefix
         assert!(matches!(probe(b"Rar!\x1a\x07\x00"), Ok((Format::Rar, _))));
-        assert!(matches!(probe(b"Rar!\x1a\x07\x01\x00"), Ok((Format::Rar, _))));
+        assert!(matches!(
+            probe(b"Rar!\x1a\x07\x01\x00"),
+            Ok((Format::Rar, _))
+        ));
     }
 
     #[test]

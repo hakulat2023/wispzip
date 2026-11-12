@@ -221,19 +221,52 @@ pub(crate) fn ensure_parent(target: &Path) -> Result<()> {
 /// otherwise repeats that whole walk once per file, which is pure overhead.
 /// The cache lives for a single extraction, so a later job never sees stale
 /// entries.
-pub(crate) struct ParentDirs(HashSet<PathBuf>);
+///
+/// Each newly created directory is also verified to resolve inside the
+/// destination. Without that check an archive can ship a relative symlink
+/// (`link -> ..`) followed by a file under it (`link/evil.txt`): `safe_join`
+/// only inspects the entry name, and the write would follow the symlink out of
+/// the target directory. Verifying once per directory keeps the cost at one
+/// `canonicalize` per directory (not per file).
+pub(crate) struct ParentDirs {
+    /// Canonical destination root; every created directory must live below it.
+    root: PathBuf,
+    seen: HashSet<PathBuf>,
+}
 
 impl ParentDirs {
-    pub(crate) fn new() -> Self {
-        Self(HashSet::new())
+    pub(crate) fn new(dest: &Path) -> Self {
+        Self {
+            // `extract()` has already created `dest`, so this normally resolves.
+            root: fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf()),
+            seen: HashSet::new(),
+        }
     }
 
     /// Create `dir` (including parents) only the first time it is requested.
     pub(crate) fn create(&mut self, dir: &Path) -> Result<()> {
-        if !dir.as_os_str().is_empty() && self.0.insert(dir.to_path_buf()) {
-            fs::create_dir_all(dir).map_err(|e| io_err(e, dir))?;
+        if dir.as_os_str().is_empty() || !self.seen.insert(dir.to_path_buf()) {
+            return Ok(());
         }
-        Ok(())
+        fs::create_dir_all(dir).map_err(|e| io_err(e, dir))?;
+        self.verify_inside(dir)
+    }
+
+    /// Reject a directory whose real path (symlinks resolved) escapes the
+    /// destination. A path that cannot be resolved is left to the write itself
+    /// to report: a dangling component will fail there anyway.
+    fn verify_inside(&self, dir: &Path) -> Result<()> {
+        let Ok(real) = fs::canonicalize(dir) else {
+            return Ok(());
+        };
+        if real.starts_with(&self.root) {
+            Ok(())
+        } else {
+            Err(WispZipError::UnsafeEntry(format!(
+                "{} resolves outside the destination",
+                dir.display()
+            )))
+        }
     }
 
     /// Ensure the parent directory of `target` exists.
@@ -305,6 +338,35 @@ pub(crate) fn set_file_metadata(f: &File, mtime: Option<SystemTime>, mode: Optio
     }
     #[cfg(not(unix))]
     let _ = mode;
+}
+
+/// Restore directory permissions collected during extraction.
+///
+/// Directories are created with `create_dir_all`, so they land at the process
+/// umask (usually 0755) no matter what the archive recorded. Files have always
+/// had their mode restored by [set_file_metadata]; doing the same for
+/// directories matters because a `0700` private folder otherwise comes out
+/// world-readable.
+///
+/// Modes are applied only once every entry has been written, deepest path
+/// first: a read-only directory (`0555`) would block creating its own
+/// children, and restoring a parent before a child would hit the same wall.
+pub(crate) fn apply_dir_modes(dirs: &[(PathBuf, u32)]) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if dirs.is_empty() {
+            return;
+        }
+        let mut order: Vec<&(PathBuf, u32)> = dirs.iter().collect();
+        order.sort_by_key(|(p, _)| std::cmp::Reverse(p.components().count()));
+        for (path, mode) in order {
+            // Best effort, same contract as file metadata.
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(*mode & 0o7777));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dirs;
 }
 
 pub(crate) fn normalize_entry_name(name: &str) -> String {

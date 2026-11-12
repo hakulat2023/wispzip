@@ -1,7 +1,7 @@
 //! ZIP: write (Deflate / Store, AES-256, ZIP64), extract, list. Handles
 //! UTF-8/GBK legacy entry-name decoding for both extract and list.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -9,8 +9,8 @@ use std::time::SystemTime;
 use crate::compress::{CompressOptions, PlanEntry};
 use crate::error::{io_err, Result, WispZipError};
 use crate::extract::{
-    ensure_parent, normalize_entry_name, set_file_metadata, EntrySelection, ExtractOptions,
-    ExtractStats, NameEncoding, TargetAction,
+    apply_dir_modes, normalize_entry_name, set_file_metadata, EntrySelection, ExtractOptions,
+    ExtractStats, NameEncoding, ParentDirs, TargetAction,
 };
 use crate::formats::days_from_civil;
 use crate::progress::{system_time_from_unix, CountingReader, CountingWriter, Progress, Shared};
@@ -66,7 +66,8 @@ where
                 Some(pw) => o.with_aes_encryption(AesMode::Aes256, pw),
                 None => o,
             };
-            zw.start_file(&e.name, o).map_err(|er| zip_err(er, &e.src))?;
+            zw.start_file(&e.name, o)
+                .map_err(|er| zip_err(er, &e.src))?;
             let f = File::open(&e.src).map_err(|er| io_err(er, &e.src))?;
             let mut cr = CountingReader::new(BufReader::new(f), shared.clone());
             io::copy(&mut cr, &mut zw).map_err(|er| io_err(er, &e.src))?;
@@ -115,6 +116,13 @@ where
     }
     let mut work: Vec<Work> = Vec::new();
     let mut total: u64 = 0;
+    // Every parent directory is created and verified here, on the main thread:
+    // a pre-existing `sub -> /outside` symlink in the destination would
+    // otherwise let the worker threads write through it.
+    let mut parents = ParentDirs::new(&opt.dest);
+    // Directory modes are recorded here and applied after the workers finish
+    // (see apply_dir_modes) instead of at create time.
+    let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
     for i in 0..n {
         shared.borrow().check_cancel()?;
         let zf = z.by_index_raw(i).map_err(|e| zip_err(e, &path))?;
@@ -125,7 +133,10 @@ where
         }
         if zf.is_dir() {
             let target = opt.join_name(&name)?;
-            fs::create_dir_all(&target).map_err(|e| io_err(e, &target))?;
+            parents.create(&target)?;
+            if let Some(m) = zf.unix_mode() {
+                dir_modes.push((target, m));
+            }
             stats.dirs += 1;
             continue;
         }
@@ -140,7 +151,7 @@ where
                 continue;
             }
         };
-        ensure_parent(&target)?;
+        parents.ensure(&target)?;
         total += zf.size();
         work.push(Work {
             index: i,
@@ -157,7 +168,7 @@ where
 
     // ---- Phase 2: parallel extraction across a worker pool. Entries are independent; a cursor
     // dispatches large files first (longest task first, which shortens tail latency).
-    work.sort_by(|a, b| b.size.cmp(&a.size));
+    work.sort_by_key(|w| std::cmp::Reverse(w.size));
     let work = Arc::new(work);
     let cursor = Arc::new(AtomicUsize::new(0));
     let workers_cancel = Arc::new(AtomicBool::new(false));
@@ -199,7 +210,12 @@ where
                 };
                 let out = match File::create(&item.target) {
                     Ok(o) => o,
-                    Err(e) => return fail(WispZipError::Io { path: item.target.clone(), source: e }),
+                    Err(e) => {
+                        return fail(WispZipError::Io {
+                            path: item.target.clone(),
+                            source: e,
+                        })
+                    }
                 };
                 let mut w = std::io::BufWriter::new(out);
                 let mut buf = [0u8; 64 * 1024];
@@ -212,16 +228,24 @@ where
                         Ok(0) => break,
                         Ok(nread) => {
                             if let Err(e) = w.write_all(&buf[..nread]) {
-                                return fail(WispZipError::Io { path: item.target.clone(), source: e });
+                                return fail(WispZipError::Io {
+                                    path: item.target.clone(),
+                                    source: e,
+                                });
                             }
                             written += nread as u64;
                         }
                         Err(e) => {
                             // With a password supplied, a decrypt/CRC failure is almost always a wrong password
                             let err = if password.is_some() && !crate::error::is_cancel_io(&e) {
-                                WispZipError::PasswordRequired(src.display_path().display().to_string())
+                                WispZipError::PasswordRequired(
+                                    src.display_path().display().to_string(),
+                                )
                             } else {
-                                WispZipError::Io { path: item.target.clone(), source: e }
+                                WispZipError::Io {
+                                    path: item.target.clone(),
+                                    source: e,
+                                }
                             };
                             return fail(err);
                         }
@@ -229,7 +253,12 @@ where
                 }
                 let out_file = match w.into_inner() {
                     Ok(o) => o,
-                    Err(e) => return fail(WispZipError::Io { path: item.target.clone(), source: e.into_error() }),
+                    Err(e) => {
+                        return fail(WispZipError::Io {
+                            path: item.target.clone(),
+                            source: e.into_error(),
+                        })
+                    }
                 };
                 set_file_metadata(&out_file, item.mtime, item.mode);
                 let _ = tx.send(WorkerMsg::Done {
@@ -275,6 +304,7 @@ where
     for h in handles {
         let _ = h.join();
     }
+    apply_dir_modes(&dir_modes);
 
     if cancelled || shared.borrow().cancelled() {
         return Err(WispZipError::Cancelled);
@@ -293,10 +323,9 @@ fn opt_password_open<'a, R: std::io::Read + std::io::Seek>(
     password: Option<&str>,
 ) -> zip::result::ZipResult<zip::read::ZipFile<'a, R>> {
     match password {
-        Some(pw) => z.by_index_with_options(
-            index,
-            ZipReadOptions::new().password(Some(pw.as_bytes())),
-        ),
+        Some(pw) => {
+            z.by_index_with_options(index, ZipReadOptions::new().password(Some(pw.as_bytes())))
+        }
         None => z.by_index(index),
     }
 }
@@ -404,9 +433,15 @@ mod tests {
     fn decode_names_auto_prefers_utf8_then_gbk() {
         // "中文.txt" in GBK bytes: D6 D0 CE C4 2E 74 78 74
         let gbk_bytes = [0xD6, 0xD0, 0xCE, 0xC4, b'.', b't', b'x', b't'];
-        assert_eq!(decode_entry_name(&gbk_bytes, NameEncoding::Auto), "中文.txt");
+        assert_eq!(
+            decode_entry_name(&gbk_bytes, NameEncoding::Auto),
+            "中文.txt"
+        );
         let utf8_bytes = "中文.txt".as_bytes();
-        assert_eq!(decode_entry_name(utf8_bytes, NameEncoding::Auto), "中文.txt");
+        assert_eq!(
+            decode_entry_name(utf8_bytes, NameEncoding::Auto),
+            "中文.txt"
+        );
     }
 
     #[test]
@@ -543,7 +578,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(dest2.join("Mango/a.docx")).unwrap(), b"AAA");
-        assert_eq!(std::fs::read(dest2.join("Mango/sub/b.xlsx")).unwrap(), b"BBB");
+        assert_eq!(
+            std::fs::read(dest2.join("Mango/sub/b.xlsx")).unwrap(),
+            b"BBB"
+        );
         assert!(!dest2.join("top.txt").exists());
 
         // 3) Whole archive -> full layout
@@ -558,7 +596,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(dest3.join("top.txt")).unwrap(), b"TOP");
-        assert_eq!(std::fs::read(dest3.join("Mango/sub/b.xlsx")).unwrap(), b"BBB");
+        assert_eq!(
+            std::fs::read(dest3.join("Mango/sub/b.xlsx")).unwrap(),
+            b"BBB"
+        );
 
         // 4) Extract with name conflicts -> auto-rename, never overwrite
         extract(
@@ -572,10 +613,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(dest.join("Mango/a.docx")).unwrap(), b"AAA");
-        let renamed = std::fs::read_dir(dest.join("Mango")).unwrap()
+        let renamed = std::fs::read_dir(dest.join("Mango"))
+            .unwrap()
             .filter_map(|e| e.ok())
             .any(|e| e.file_name().to_string_lossy().starts_with("a (1)"));
-        assert!(renamed, "a conflicting file should be renamed to a (1).docx");
+        assert!(
+            renamed,
+            "a conflicting file should be renamed to a (1).docx"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

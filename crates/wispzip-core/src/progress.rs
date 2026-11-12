@@ -107,18 +107,6 @@ impl<F: FnMut(&Progress) -> bool> Reporter<F> {
         }
     }
 
-    pub fn progress(&self) -> Progress {
-        Progress {
-            phase: self.phase,
-            current_file: self.current.clone(),
-            processed_bytes: self.processed,
-            total_bytes: self.total,
-            output_bytes: self.output,
-            files_done: self.files_done,
-            files_total: self.files_total,
-        }
-    }
-
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
@@ -213,7 +201,9 @@ impl<W: io::Write, F: FnMut(&Progress) -> bool> io::Write for CountingWriter<W, 
 }
 
 pub fn unix_secs(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 pub fn system_time_from_unix(secs: u64) -> SystemTime {

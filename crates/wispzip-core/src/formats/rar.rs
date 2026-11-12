@@ -8,8 +8,7 @@ use std::path::Path;
 
 use crate::error::{io_err, Result, WispZipError};
 use crate::extract::{
-    ensure_parent, normalize_entry_name, EntrySelection, ExtractOptions,
-    ExtractStats, TargetAction,
+    normalize_entry_name, EntrySelection, ExtractOptions, ExtractStats, ParentDirs, TargetAction,
 };
 use crate::formats::days_from_civil;
 use crate::progress::{Progress, Shared};
@@ -58,6 +57,9 @@ where
     .map_err(|e| rar_err(e, archive))?;
 
     let mut proc = proc;
+    // Created directories are verified to resolve inside the destination, so a
+    // pre-existing `sub -> /outside` symlink cannot be written through.
+    let mut parents = ParentDirs::new(&opt.dest);
     while let Some(header) = proc.read_header().map_err(|e| rar_err(e, archive))? {
         shared.borrow().check_cancel()?;
         // copy what we need before extract_to consumes the header
@@ -76,9 +78,11 @@ where
         }
         if is_dir {
             let target = opt.join_name(&name)?;
-            fs::create_dir_all(&target).map_err(|e| io_err(e, &target))?;
+            parents.create(&target)?;
             stats.dirs += 1;
-            if sel.settled(&name) { break; }
+            if sel.settled(&name) {
+                break;
+            }
             proc = header.skip().map_err(|e| rar_err(e, archive))?;
             continue;
         }
@@ -95,7 +99,7 @@ where
                 continue;
             }
         };
-        ensure_parent(&target)?;
+        parents.ensure(&target)?;
         // UnRAR refuses to overwrite; align with the Overwrite policy ourselves
         if target.symlink_metadata().is_ok() {
             fs::remove_file(&target).map_err(|e| io_err(e, &target))?;
@@ -112,17 +116,16 @@ where
             r.report(false);
         }
         // All selected entries have been extracted: stop iterating the remaining entries
-        if sel.settled(&name) { break; }
+        if sel.settled(&name) {
+            break;
+        }
     }
     Ok(())
 }
 
 // ---- list ------------------------------------------------------------------
 
-pub(crate) fn list(
-    archive: &Path,
-    password: Option<&str>,
-) -> Result<Vec<super::EntryInfo>> {
+pub(crate) fn list(archive: &Path, password: Option<&str>) -> Result<Vec<super::EntryInfo>> {
     let ar = match password {
         Some(p) => unrar::Archive::with_password(archive, p),
         None => unrar::Archive::new(archive),
@@ -158,9 +161,7 @@ fn rar_err_ext(e: unrar::error::UnrarError, archive: &Path, encrypted: bool) -> 
         }
         // AES-encrypted entries decoded with a wrong/missing password end in a
         // CRC failure; on plain archives it means real corruption.
-        Code::BadData if encrypted => {
-            WispZipError::PasswordRequired(archive.display().to_string())
-        }
+        Code::BadData if encrypted => WispZipError::PasswordRequired(archive.display().to_string()),
         _other => WispZipError::Other(format!("rar ({:?}): {e}", e.when)),
     }
 }

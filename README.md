@@ -125,7 +125,7 @@ Requires Rust (stable), Node 20+, and pnpm.
 ```bash
 pnpm install          # frontend dependencies
 pnpm tauri dev        # desktop dev mode (vite + cargo running together)
-cargo test -p wispzip-core   # core engine tests (104)
+cargo test -p wispzip-core   # core engine tests (106)
 
 # Three test layers:
 #   unit tests (inline in src/)  — sniffing, path safety, volumes, progress, time conversion

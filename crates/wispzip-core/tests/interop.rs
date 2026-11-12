@@ -86,10 +86,22 @@ fn ours_7z_validated_by_real_7z() {
     let root = temp_root("7z-ours");
     let src = make_source(&root);
     let archive = root.join("out.7z");
-    compress(&[src.clone()], &archive, &CompressOptions { format: Format::SevenZ, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        std::slice::from_ref(&src),
+        &archive,
+        &CompressOptions {
+            format: Format::SevenZ,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
     // integrity + listing through the reference implementation
-    assert!(run("7z", &["t", "out.7z"], &root), "7z t failed on our archive");
+    assert!(
+        run("7z", &["t", "out.7z"], &root),
+        "7z t failed on our archive"
+    );
 
     let dest = root.join("via7z");
     assert!(run("7z", &["x", "-y", "-ovia7z", "out.7z"], &root));
@@ -127,11 +139,12 @@ fn ours_7z_encrypted_validated_by_real_7z() {
 
     // wrong password must fail, right password must round-trip
     assert!(!run("7z", &["x", "-y", "-pwrong", "-ow", "enc.7z"], &root));
-    assert!(run("7z", &["x", "-y", "-pinterop-pw", "-ook", "enc.7z"], &root));
-    assert_eq!(
-        fs::read(root.join("ok/src/top.md")).unwrap(),
-        b"# top"
-    );
+    assert!(run(
+        "7z",
+        &["x", "-y", "-pinterop-pw", "-ook", "enc.7z"],
+        &root
+    ));
+    assert_eq!(fs::read(root.join("ok/src/top.md")).unwrap(), b"# top");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -145,24 +158,43 @@ fn real_7z_output_extracts_through_wispzip() {
     let _src = make_source(&root);
     assert!(run("7z", &["a", "-y", "theirs.7z", "src"], &root));
     // also with encrypted headers (-mhe=on)
-    assert!(run("7z", &["a", "-y", "-pmhe-pw", "-mhe=on", "mhe.7z", "src"], &root));
+    assert!(run(
+        "7z",
+        &["a", "-y", "-pmhe-pw", "-mhe=on", "mhe.7z", "src"],
+        &root
+    ));
 
     for name in ["theirs.7z", "mhe.7z"] {
         let archive = root.join(name);
-        let pw = if name.contains("mhe") { Some("mhe-pw".to_string()) } else { None };
+        let pw = if name.contains("mhe") {
+            Some("mhe-pw".to_string())
+        } else {
+            None
+        };
         let entries = list_archive(&archive, wispzip_core::NameEncoding::Auto, pw.as_deref())
             .unwrap_or_else(|e| panic!("{name} list failed: {e}"));
-        assert!(entries.iter().any(|e| e.name.contains("a.txt")), "{name}: {entries:?}");
+        assert!(
+            entries.iter().any(|e| e.name.contains("a.txt")),
+            "{name}: {entries:?}"
+        );
 
         let dest = root.join(format!("out-{name}"));
         extract(
             &archive,
-            &ExtractOptions { dest: dest.clone(), password: pw, ..Default::default() },
+            &ExtractOptions {
+                dest: dest.clone(),
+                password: pw,
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{name} extract failed: {e}"));
         let got = walk_files(&dest);
-        assert!(got.iter().any(|(p, c)| p.ends_with("top.md") && c == b"# top"), "{name}");
+        assert!(
+            got.iter()
+                .any(|(p, c)| p.ends_with("top.md") && c == b"# top"),
+            "{name}"
+        );
     }
     let _ = fs::remove_dir_all(&root);
 }
@@ -179,11 +211,27 @@ fn ours_gz_validated_by_real_gzip() {
     let src = root.join("payload.txt");
     fs::write(&src, "gzip interop\n".repeat(500)).unwrap();
     let archive = root.join("payload.txt.gz");
-    compress(&[src], &archive, &CompressOptions { format: Format::Gz, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        &[src],
+        &archive,
+        &CompressOptions {
+            format: Format::Gz,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
-    assert!(run("gzip", &["-t", "payload.txt.gz"], &root), "gzip -t rejected our output");
+    assert!(
+        run("gzip", &["-t", "payload.txt.gz"], &root),
+        "gzip -t rejected our output"
+    );
     assert!(run("gzip", &["-dk", "-c", "payload.txt.gz"], &root) || true);
-    let out = Command::new("gzip").args(["-dc", "payload.txt.gz"]).current_dir(&root).output().unwrap();
+    let out = Command::new("gzip")
+        .args(["-dc", "payload.txt.gz"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
     assert_eq!(out.stdout, b"gzip interop\n".repeat(500));
     let _ = fs::remove_dir_all(&root);
 }
@@ -198,10 +246,26 @@ fn ours_xz_validated_by_real_xz() {
     let src = root.join("payload.txt");
     fs::write(&src, "xz interop\n".repeat(500)).unwrap();
     let archive = root.join("payload.txt.xz");
-    compress(&[src], &archive, &CompressOptions { format: Format::Xz, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        &[src],
+        &archive,
+        &CompressOptions {
+            format: Format::Xz,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
-    assert!(run("xz", &["-t", "payload.txt.xz"], &root), "xz -t rejected our output");
-    let out = Command::new("xz").args(["-dc", "payload.txt.xz"]).current_dir(&root).output().unwrap();
+    assert!(
+        run("xz", &["-t", "payload.txt.xz"], &root),
+        "xz -t rejected our output"
+    );
+    let out = Command::new("xz")
+        .args(["-dc", "payload.txt.xz"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
     assert_eq!(out.stdout, b"xz interop\n".repeat(500));
     let _ = fs::remove_dir_all(&root);
 }
@@ -216,10 +280,26 @@ fn ours_bz2_validated_by_real_bzip2() {
     let src = root.join("payload.txt");
     fs::write(&src, "bzip2 interop\n".repeat(500)).unwrap();
     let archive = root.join("payload.txt.bz2");
-    compress(&[src], &archive, &CompressOptions { format: Format::Bz2, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        &[src],
+        &archive,
+        &CompressOptions {
+            format: Format::Bz2,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
-    assert!(run("bzip2", &["-t", "payload.txt.bz2"], &root), "bzip2 -t rejected our output");
-    let out = Command::new("bzip2").args(["-dc", "payload.txt.bz2"]).current_dir(&root).output().unwrap();
+    assert!(
+        run("bzip2", &["-t", "payload.txt.bz2"], &root),
+        "bzip2 -t rejected our output"
+    );
+    let out = Command::new("bzip2")
+        .args(["-dc", "payload.txt.bz2"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
     assert_eq!(out.stdout, b"bzip2 interop\n".repeat(500));
     let _ = fs::remove_dir_all(&root);
 }
@@ -240,8 +320,15 @@ fn real_xz_and_bzip2_output_extract_through_wispzip() {
 
     for name in ["x.txt.xz", "x.txt.bz2"] {
         let dest = root.join(format!("out-{name}"));
-        extract(&root.join(name), &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress)
-            .unwrap_or_else(|e| panic!("{name} extract failed: {e}"));
+        extract(
+            &root.join(name),
+            &ExtractOptions {
+                dest: dest.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{name} extract failed: {e}"));
         assert_eq!(fs::read(dest.join("x.txt")).unwrap(), payload, "{name}");
     }
     let _ = fs::remove_dir_all(&root);
@@ -259,11 +346,24 @@ fn real_tar_gz_output_extracts_through_wispzip() {
     let _src = make_source(&root);
     assert!(run("tar", &["czf", "theirs.tar.gz", "src"], &root));
 
-    let entries = list_archive(&root.join("theirs.tar.gz"), wispzip_core::NameEncoding::Auto, None).unwrap();
+    let entries = list_archive(
+        &root.join("theirs.tar.gz"),
+        wispzip_core::NameEncoding::Auto,
+        None,
+    )
+    .unwrap();
     assert!(entries.iter().any(|e| e.name.contains("top.md")));
 
     let dest = root.join("out");
-    extract(&root.join("theirs.tar.gz"), &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &root.join("theirs.tar.gz"),
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     assert_eq!(fs::read(dest.join("src/top.md")).unwrap(), b"# top");
     let _ = fs::remove_dir_all(&root);
 }
@@ -277,11 +377,23 @@ fn ours_tar_gz_validated_by_real_tar() {
     let root = temp_root("ours-tar");
     let src = make_source(&root);
     let archive = root.join("ours.tar.gz");
-    compress(&[src], &archive, &CompressOptions { format: Format::TarGz, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        &[src],
+        &archive,
+        &CompressOptions {
+            format: Format::TarGz,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
     let dest = root.join("viatar");
     fs::create_dir_all(&dest).unwrap();
-    assert!(run("tar", &["xzf", "../ours.tar.gz"], &dest), "tar rejected our tar.gz");
+    assert!(
+        run("tar", &["xzf", "../ours.tar.gz"], &dest),
+        "tar rejected our tar.gz"
+    );
     assert_eq!(fs::read(dest.join("src/top.md")).unwrap(), b"# top");
     let _ = fs::remove_dir_all(&root);
 }
@@ -295,7 +407,10 @@ fn mode_preservation_cross_tool_with_real_7z() {
         return;
     }
     #[cfg(not(unix))]
-    { eprintln!("skipping: unix only"); return; }
+    {
+        eprintln!("skipping: unix only");
+        return;
+    }
 
     #[cfg(unix)]
     {
@@ -308,11 +423,26 @@ fn mode_preservation_cross_tool_with_real_7z() {
 
         // ours -> theirs: real 7z must restore 0o750
         let archive = root.join("ours.7z");
-        compress(&[src.clone()], &archive, &CompressOptions { format: Format::SevenZ, ..Default::default() }, noop_progress).unwrap();
+        compress(
+            std::slice::from_ref(&src),
+            &archive,
+            &CompressOptions {
+                format: Format::SevenZ,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
         let via7z = root.join("via7z");
         assert!(run("7z", &["x", "-y", "-ovia7z", "ours.7z"], &root));
         assert_eq!(
-            via7z.join("tool.sh").metadata().unwrap().permissions().mode() & 0o777,
+            via7z
+                .join("tool.sh")
+                .metadata()
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o750 & 0o777,
             "real 7z must see our unix attributes"
         );
@@ -321,7 +451,15 @@ fn mode_preservation_cross_tool_with_real_7z() {
         let theirs = root.join("theirs.7z");
         assert!(run("7z", &["a", "-y", "theirs.7z", "tool.sh"], &root));
         let out = root.join("out");
-        extract(&theirs, &ExtractOptions { dest: out.clone(), ..Default::default() }, noop_progress).unwrap();
+        extract(
+            &theirs,
+            &ExtractOptions {
+                dest: out.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
         assert_eq!(
             out.join("tool.sh").metadata().unwrap().permissions().mode() & 0o7777,
             0o750

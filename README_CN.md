@@ -128,7 +128,7 @@ wispzip/
 ```bash
 pnpm install          # 前端依赖
 pnpm tauri dev        # 桌面端开发模式（vite + cargo 同时跑）
-cargo test -p wispzip-core   # 核心引擎测试（104 个）
+cargo test -p wispzip-core   # 核心引擎测试（106 个）
 
 # 测试分三层：
 #   单元测试（src 内联）    —— 嗅探、路径安全、分卷、进度、时间换算等

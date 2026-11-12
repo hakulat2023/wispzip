@@ -11,7 +11,6 @@ use wispzip_core::{CompressOptions, ExtractOptions, Format, NameEncoding};
     version,
     about = "wispzip - cross-platform file archiver",
     long_about = "wispzip - cross-platform file archiver\n\nCompress to zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst/gz/zst/xz/bz2,\nextract those plus rar (read-only). Format is inferred from the file\nextension. Optional byte-level split volumes (--split 100M)."
-
 )]
 struct Cli {
     #[command(subcommand)]
@@ -194,13 +193,34 @@ fn default_dest(archive: &std::path::Path) -> PathBuf {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "archive".into());
-    let stem = Format::from_archive_name(&name)
-        .map(|f| name[..name.len() - f.extension().len() - 1].to_string())
-        .unwrap_or(name);
+    // `backup.7z.001` names the same archive as `backup.7z`: drop the numeric
+    // volume suffix first, otherwise the stem keeps `.001` and the derived
+    // directory collides with the volume file itself (create_dir_all then
+    // fails with "File exists").
+    let base = strip_volume_suffix(&name);
+    let stem = Format::from_archive_name(base)
+        .map(|f| base[..base.len() - f.extension().len() - 1].to_string())
+        .unwrap_or_else(|| base.to_string());
     archive
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join(stem)
+}
+
+/// `backup.7z.001` -> `backup.7z`; anything without a numeric volume suffix is
+/// returned unchanged.
+fn strip_volume_suffix(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(i) if i > 0 => {
+            let tail = &name[i + 1..];
+            if (1..=9).contains(&tail.len()) && tail.bytes().all(|b| b.is_ascii_digit()) {
+                &name[..i]
+            } else {
+                name
+            }
+        }
+        _ => name,
+    }
 }
 
 /// Parse CLI args and execute the command. Returns the process exit code.
@@ -234,7 +254,10 @@ pub fn run_cli(args: Vec<String>) -> i32 {
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "archive".into());
-                first.parent().unwrap_or(Path::new(".")).join(format!("{name}.zip"))
+                first
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(format!("{name}.zip"))
             });
             let format = match core::infer_output_format(&out) {
                 Ok(f) => f,
@@ -383,4 +406,62 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .parse::<u64>()
         .map(|n| n * mult)
         .map_err(|_| format!("size \"{s}\" is not a valid number"))
+        .and_then(|n| {
+            if n == 0 {
+                Err(format!("size \"{s}\" must be greater than zero"))
+            } else {
+                Ok(n)
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn default_dest_drops_the_archive_extension() {
+        assert_eq!(
+            default_dest(Path::new("/x/backup.zip")),
+            Path::new("/x/backup")
+        );
+        assert_eq!(default_dest(Path::new("/x/a.tar.gz")), Path::new("/x/a"));
+    }
+
+    #[test]
+    fn default_dest_resolves_volume_sets_to_the_archive_stem() {
+        // Regression: `wispzip x backup.7z.001` used to derive a destination
+        // named "backup.7z.001", i.e. the volume file itself, and then failed
+        // with "File exists".
+        assert_eq!(
+            default_dest(Path::new("/x/backup.7z.001")),
+            Path::new("/x/backup")
+        );
+        assert_eq!(
+            default_dest(Path::new("/x/a.tar.gz.012")),
+            Path::new("/x/a")
+        );
+    }
+
+    #[test]
+    fn volume_suffix_detection_is_digits_only() {
+        assert_eq!(strip_volume_suffix("a.7z.001"), "a.7z");
+        assert_eq!(strip_volume_suffix("a.7z.1"), "a.7z");
+        assert_eq!(strip_volume_suffix("a.7z"), "a.7z");
+        assert_eq!(strip_volume_suffix("a.7z.part"), "a.7z.part");
+        assert_eq!(strip_volume_suffix("noext"), "noext");
+    }
+
+    #[test]
+    fn parse_size_understands_suffixes() {
+        assert_eq!(parse_size("100M"), Ok(100 * 1024 * 1024));
+        assert_eq!(parse_size("500K"), Ok(500 * 1024));
+        assert_eq!(parse_size("1G"), Ok(1024 * 1024 * 1024));
+        assert_eq!(parse_size("100MB"), Ok(100 * 1024 * 1024));
+        assert_eq!(parse_size("2048"), Ok(2048));
+        assert!(parse_size("0").is_err());
+        assert!(parse_size("100X").is_err());
+        assert!(parse_size("").is_err());
+    }
 }

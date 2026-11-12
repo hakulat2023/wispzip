@@ -14,11 +14,13 @@ use std::time::SystemTime;
 use crate::compress::{CompressOptions, PlanEntry};
 use crate::error::{io_err, Result, WispZipError};
 use crate::extract::{
-    ensure_parent, normalize_entry_name, set_file_metadata, EntrySelection,
+    apply_dir_modes, ensure_parent, normalize_entry_name, set_file_metadata, EntrySelection,
     ExtractOptions, ExtractStats, ParentDirs, TargetAction,
 };
 use crate::format::Format;
-use crate::progress::{system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared};
+use crate::progress::{
+    system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared,
+};
 use crate::source::ArchiveSource;
 
 // ---- write -----------------------------------------------------------------
@@ -41,12 +43,16 @@ where
     let sink = match format {
         Format::Tar => tar_build(entries, sink, shared)?,
         Format::TarGz => {
-            let enc = flate2::write::GzEncoder::new(sink, flate2::Compression::new(level.min(9) as u32));
+            let enc =
+                flate2::write::GzEncoder::new(sink, flate2::Compression::new(level.min(9) as u32));
             let enc = tar_build(entries, enc, shared)?;
             enc.finish().map_err(|e| io_err(e, tmp))?
         }
         Format::TarBz2 => {
-            let enc = bzip2::write::BzEncoder::new(sink, bzip2::Compression::new(level.clamp(1, 9) as u32));
+            let enc = bzip2::write::BzEncoder::new(
+                sink,
+                bzip2::Compression::new(level.clamp(1, 9) as u32),
+            );
             let enc = tar_build(entries, enc, shared)?;
             enc.finish().map_err(|e| io_err(e, tmp))?
         }
@@ -84,7 +90,12 @@ where
         Format::Tar => tar_read(br, opt, shared, stats),
         Format::TarGz => tar_read(flate2::read::MultiGzDecoder::new(br), opt, shared, stats),
         Format::TarBz2 => tar_read(bzip2::read::BzDecoder::new(br), opt, shared, stats),
-        Format::TarXz => tar_read(xz2::read::XzDecoder::new_multi_decoder(br), opt, shared, stats),
+        Format::TarXz => tar_read(
+            xz2::read::XzDecoder::new_multi_decoder(br),
+            opt,
+            shared,
+            stats,
+        ),
         Format::TarZst => {
             let dec = zstd::stream::read::Decoder::new(br).map_err(|e| io_err(e, &path))?;
             tar_read(dec, opt, shared, stats)
@@ -95,10 +106,7 @@ where
 
 // ---- list ------------------------------------------------------------------
 
-pub(crate) fn list(
-    src: &ArchiveSource,
-    format: Format,
-) -> Result<Vec<super::EntryInfo>> {
+pub(crate) fn list(src: &ArchiveSource, format: Format) -> Result<Vec<super::EntryInfo>> {
     let path = src.display_path();
     let f = src.open()?;
     let mut out = Vec::new();
@@ -108,10 +116,7 @@ pub(crate) fn list(
             tar::Archive::new(flate2::read::MultiGzDecoder::new(f)),
             &mut out,
         )?,
-        Format::TarBz2 => collect(
-            tar::Archive::new(bzip2::read::BzDecoder::new(f)),
-            &mut out,
-        )?,
+        Format::TarBz2 => collect(tar::Archive::new(bzip2::read::BzDecoder::new(f)), &mut out)?,
         Format::TarXz => collect(
             tar::Archive::new(xz2::read::XzDecoder::new_multi_decoder(f)),
             &mut out,
@@ -144,7 +149,10 @@ where
         if e.is_dir {
             h.set_entry_type(tar::EntryType::Directory);
             h.set_size(0);
-            h.set_mode(e.mode.map(|m| m | 0o755).unwrap_or(0o755) & 0o7777);
+            // Preserve the source mode. OR-ing 0o755 in here silently widened
+            // a private directory (0o700) to world-readable, and contradicts
+            // the "preserves permissions" promise.
+            h.set_mode(e.mode.unwrap_or(0o755) & 0o7777);
         } else {
             h.set_entry_type(tar::EntryType::Regular);
             h.set_size(e.size);
@@ -167,7 +175,8 @@ where
             }
         }
     }
-    b.into_inner().map_err(|er| io_err(er, Path::new("archive")))
+    b.into_inner()
+        .map_err(|er| io_err(er, Path::new("archive")))
 }
 
 /// Entries at or below this size are decoded on the reader thread and handed
@@ -185,8 +194,14 @@ struct TarWork {
 }
 
 enum TarMsg {
-    Done { target: PathBuf, bytes: u64 },
-    Failed { target: PathBuf, error: WispZipError },
+    Done {
+        target: PathBuf,
+        bytes: u64,
+    },
+    Failed {
+        target: PathBuf,
+        error: WispZipError,
+    },
 }
 
 /// Writer count for tar-family extraction. gzip/bzip2/xz decoding is inherently
@@ -207,8 +222,7 @@ fn tar_workers() -> usize {
     thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-        .min(4)
-        .max(1)
+        .clamp(1, 4)
 }
 
 /// Entries sharing a target always go to the same writer (FIFO), preserving
@@ -258,17 +272,22 @@ fn apply_tar_msg<F>(
     }
 }
 
-fn tar_read<F, R>(r: R, opt: &ExtractOptions, shared: &Shared<F>, stats: &mut ExtractStats) -> Result<()>
+fn tar_read<F, R>(
+    r: R,
+    opt: &ExtractOptions,
+    shared: &Shared<F>,
+    stats: &mut ExtractStats,
+) -> Result<()>
 where
     F: FnMut(&Progress) -> bool,
     R: Read,
 {
     let mut ar = tar::Archive::new(r);
     let mut sel = EntrySelection::new(&opt.entries);
-    let mut parents = ParentDirs::new();
-    let entries = ar
-        .entries()
-        .map_err(|e| io_err(e, &opt.dest))?;
+    let mut parents = ParentDirs::new(&opt.dest);
+    // Directory modes are applied after the workers drain (see apply_dir_modes).
+    let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
+    let entries = ar.entries().map_err(|e| io_err(e, &opt.dest))?;
 
     let n_workers = tar_workers();
     let stop = Arc::new(AtomicBool::new(false));
@@ -283,7 +302,10 @@ where
         handles.push(thread::spawn(move || {
             for w in rx {
                 if stop.load(Ordering::SeqCst) {
-                    let _ = result_tx.send(TarMsg::Done { target: w.target, bytes: 0 });
+                    let _ = result_tx.send(TarMsg::Done {
+                        target: w.target,
+                        bytes: 0,
+                    });
                     continue;
                 }
                 let res = (|| -> Result<u64> {
@@ -294,8 +316,14 @@ where
                     Ok(w.data.len() as u64)
                 })();
                 let msg = match res {
-                    Ok(bytes) => TarMsg::Done { target: w.target, bytes },
-                    Err(error) => TarMsg::Failed { target: w.target, error },
+                    Ok(bytes) => TarMsg::Done {
+                        target: w.target,
+                        bytes,
+                    },
+                    Err(error) => TarMsg::Failed {
+                        target: w.target,
+                        error,
+                    },
                 };
                 let _ = result_tx.send(msg);
             }
@@ -324,10 +352,7 @@ where
                 stop.store(true, Ordering::SeqCst);
             }
             let mut e = entry.map_err(|er| io_err(er, &opt.dest))?;
-            let path = e
-                .path()
-                .map_err(|er| io_err(er, &opt.dest))?
-                .to_path_buf();
+            let path = e.path().map_err(|er| io_err(er, &opt.dest))?.to_path_buf();
             let name = normalize_entry_name(&path.to_string_lossy());
             if name.is_empty() || !sel.selects(&name) {
                 continue;
@@ -337,6 +362,9 @@ where
                 tar::EntryType::Directory => {
                     let target = opt.join_name(&name)?;
                     parents.create(&target)?;
+                    if let Ok(m) = e.header().mode() {
+                        dir_modes.push((target, m));
+                    }
                     stats.dirs += 1;
                 }
                 tar::EntryType::Symlink => {
@@ -351,7 +379,7 @@ where
                     let h = e.header();
                     let size = h.size().unwrap_or(0);
                     let mtime = h.mtime().ok().map(system_time_from_unix);
-                    let mode = h.mode().ok().map(|m| m as u32);
+                    let mode = h.mode().ok();
                     // Resolve on this thread in stream order so conflict policy
                     // keeps its original semantics. If an earlier entry with
                     // the same target is still queued, wait for it to land
@@ -369,7 +397,12 @@ where
                             if size <= SMALL_ENTRY_MAX {
                                 let mut data = Vec::with_capacity(size as usize);
                                 e.read_to_end(&mut data).map_err(|er| io_err(er, &target))?;
-                                let work = TarWork { target: target.clone(), data, mtime, mode };
+                                let work = TarWork {
+                                    target: target.clone(),
+                                    data,
+                                    mtime,
+                                    mode,
+                                };
                                 *inflight.entry(target.clone()).or_insert(0) += 1;
                                 pending += 1;
                                 let slot = worker_slot(&target, n_workers);
@@ -378,8 +411,10 @@ where
                                 })?;
                             } else {
                                 // Large entry: stream it here, never buffered in memory.
-                                let out = File::create(&target).map_err(|er| io_err(er, &target))?;
-                                let mut cw = CountingWriter::new(BufWriter::new(out), shared.clone());
+                                let out =
+                                    File::create(&target).map_err(|er| io_err(er, &target))?;
+                                let mut cw =
+                                    CountingWriter::new(BufWriter::new(out), shared.clone());
                                 let copied = io::copy(&mut e, &mut cw);
                                 let file = match cw.into_inner().into_inner() {
                                     Ok(f) => f,
@@ -415,7 +450,9 @@ where
                     }
                 }
             }
-            if sel.settled(&name) { break; }
+            if sel.settled(&name) {
+                break;
+            }
         }
         Ok(())
     })();
@@ -439,6 +476,7 @@ where
             failure = Some(e);
         }
     }
+    apply_dir_modes(&dir_modes);
     if shared.borrow().cancelled() {
         return Err(WispZipError::Cancelled);
     }
@@ -448,7 +486,14 @@ where
     }
 }
 
-/// Recreate a symlink when the link target is relative; returns true on success.
+/// Recreate a symlink when the link target is relative and stays inside the
+/// destination; returns true on success.
+///
+/// tar symlinks are resolved by the OS at write time, so a link pointing
+/// outside the destination is both a way to plant an escaping link and a way
+/// for a later entry (`link/evil.txt`) to be written outside the tree. The
+/// target is therefore checked lexically here, and `ParentDirs` re-checks the
+/// resolved directory before every write.
 #[cfg(unix)]
 fn recreate_symlink<R: Read>(
     e: &mut tar::Entry<'_, R>,
@@ -468,6 +513,9 @@ fn recreate_symlink<R: Read>(
         TargetAction::Write(t) => t,
         TargetAction::Skip => return Ok(false),
     };
+    if link_escapes(&opt.dest, &target, &link) {
+        return Ok(false);
+    }
     ensure_parent(&target)?;
     if target.symlink_metadata().is_ok() {
         let _ = fs::remove_file(&target);
@@ -481,6 +529,37 @@ fn recreate_symlink<R: Read>(
     }
 }
 
+/// Would `link` (placed at `link_at`) resolve outside `dest`?
+///
+/// Purely lexical: `dest` is absolute, so the link's parent is expressed
+/// relative to it and each `..` in the target walks one level up. A negative
+/// depth means the resolved path left the destination.
+#[cfg(unix)]
+fn link_escapes(dest: &Path, link_at: &Path, link: &Path) -> bool {
+    use std::path::Component;
+    let parent = link_at.parent().unwrap_or(dest);
+    let mut depth: i64 = match parent.strip_prefix(dest) {
+        Ok(rel) => rel.components().count() as i64,
+        // Parent outside `dest` altogether: nothing to protect, but never legal.
+        Err(_) => return true,
+    };
+    for comp in link.components() {
+        match comp {
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            // Absolute paths and prefixes were rejected by the caller.
+            _ => return true,
+        }
+    }
+    false
+}
+
 #[cfg(not(unix))]
 fn recreate_symlink<R: Read>(
     _e: &mut tar::Entry<'_, R>,
@@ -491,7 +570,10 @@ fn recreate_symlink<R: Read>(
     Ok(false)
 }
 
-fn collect<R: std::io::Read>(mut ar: tar::Archive<R>, out: &mut Vec<super::EntryInfo>) -> Result<()> {
+fn collect<R: std::io::Read>(
+    mut ar: tar::Archive<R>,
+    out: &mut Vec<super::EntryInfo>,
+) -> Result<()> {
     let entries = ar
         .entries()
         .map_err(|e| crate::error::WispZipError::Other(format!("tar: {e}")))?;
@@ -512,7 +594,7 @@ fn collect<R: std::io::Read>(mut ar: tar::Archive<R>, out: &mut Vec<super::Entry
             size: h.size().unwrap_or(0),
             compressed_size: h.size().unwrap_or(0),
             mtime: h.mtime().ok().map(|t| t as i64),
-            mode: h.mode().ok().map(|m| m as u32),
+            mode: h.mode().ok(),
         });
     }
     Ok(())

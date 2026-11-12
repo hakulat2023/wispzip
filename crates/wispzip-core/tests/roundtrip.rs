@@ -5,7 +5,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use wispzip_core::{compress, extract, list_archive, CompressOptions, ExtractOptions, Format, WispZipError};
+use wispzip_core::{
+    compress, extract, list_archive, CompressOptions, ExtractOptions, Format, WispZipError,
+};
 
 fn temp_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("wispzip-test-{}-{}", tag, std::process::id()));
@@ -19,7 +21,9 @@ fn prng(seed: u64, len: usize) -> Vec<u8> {
     let mut s = seed;
     (0..len)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (s >> 33) as u8
         })
         .collect()
@@ -31,7 +35,11 @@ fn crc32(data: &[u8]) -> u32 {
     for (i, t) in table.iter_mut().enumerate() {
         let mut c = i as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *t = c;
     }
@@ -82,7 +90,7 @@ fn roundtrip(format: Format) {
     let expected = walk_files(&src);
 
     let stats = compress(
-        &[src.clone()],
+        std::slice::from_ref(&src),
         &archive,
         &CompressOptions {
             format,
@@ -98,8 +106,14 @@ fn roundtrip(format: Format) {
     let entries = list_archive(&archive, wispzip_core::NameEncoding::Auto, None)
         .unwrap_or_else(|e| panic!("{format:?} list failed: {e}"));
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert!(names.contains(&"src-tree/nested/a.txt"), "{format:?} {names:?}");
-    assert!(names.contains(&"src-tree/中文文件.txt"), "{format:?} {names:?}");
+    assert!(
+        names.contains(&"src-tree/nested/a.txt"),
+        "{format:?} {names:?}"
+    );
+    assert!(
+        names.contains(&"src-tree/中文文件.txt"),
+        "{format:?} {names:?}"
+    );
 
     // extract and compare
     let dest = root.join("out-dir");
@@ -160,14 +174,14 @@ fn roundtrip_7z() {
 }
 
 fn single_stream_roundtrip(format: Format) {
-    let root = temp_root(&format.extension());
+    let root = temp_root(format.extension());
     let src = root.join("payload.bin");
     let data = prng(7, 300 * 1024);
     fs::write(&src, &data).unwrap();
 
     let archive = root.join(format!("payload.bin.{}", format.extension()));
     compress(
-        &[src.clone()],
+        std::slice::from_ref(&src),
         &archive,
         &CompressOptions {
             format,
@@ -229,7 +243,10 @@ fn single_stream_magic_sniff() {
         compress(
             &[src],
             &archive,
-            &CompressOptions { format, ..Default::default() },
+            &CompressOptions {
+                format,
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap();
@@ -241,11 +258,18 @@ fn single_stream_magic_sniff() {
         let dest = root.join("out");
         extract(
             &bare,
-            &ExtractOptions { dest: dest.clone(), ..Default::default() },
+            &ExtractOptions {
+                dest: dest.clone(),
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{format:?} sniffed extract failed: {e}"));
-        assert_eq!(fs::read(dest.join("stream.out")).unwrap(), data, "{format:?}");
+        assert_eq!(
+            fs::read(dest.join("stream.out")).unwrap(),
+            data,
+            "{format:?}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
@@ -351,9 +375,25 @@ fn conflict_policies() {
     compress(&[src], &archive, &CompressOptions::default(), noop_progress).unwrap();
 
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     // rename policy: second extract must not overwrite
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     assert!(dest.join("f (1).txt").exists());
 
     // skip policy counts skipped
@@ -428,7 +468,15 @@ fn sevenz_extraction_roundtrip() {
     assert!(names.contains(&"top.txt"), "{names:?}");
 
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     assert_eq!(
         fs::read(dest.join("top.txt")).unwrap(),
         b"sevenz top\n".repeat(10)
@@ -447,7 +495,7 @@ fn sevenz_password_roundtrip_and_rejection() {
     let archive = root.join("secret.7z");
 
     compress(
-        &[src.clone()],
+        std::slice::from_ref(&src),
         &archive,
         &CompressOptions {
             format: Format::SevenZ,
@@ -606,10 +654,20 @@ fn sevenz_preserves_unix_modes() {
     fs::write(src.join("d/plain.txt"), "plain\n").unwrap();
     fs::set_permissions(src.join("exec.sh"), fs::Permissions::from_mode(0o754)).unwrap();
     fs::set_permissions(src.join("d/plain.txt"), fs::Permissions::from_mode(0o604)).unwrap();
+    fs::set_permissions(src.join("d"), fs::Permissions::from_mode(0o700)).unwrap();
 
     // our own compress -> extract roundtrip keeps the modes
     let archive = root.join("modes.7z");
-    compress(&[src.clone()], &archive, &CompressOptions { format: Format::SevenZ, ..Default::default() }, noop_progress).unwrap();
+    compress(
+        std::slice::from_ref(&src),
+        &archive,
+        &CompressOptions {
+            format: Format::SevenZ,
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
     let entries = list_archive(&archive, wispzip_core::NameEncoding::Auto, None).unwrap();
     let mode_of = |needle: &str| {
@@ -623,14 +681,43 @@ fn sevenz_preserves_unix_modes() {
     assert_eq!(mode_of("plain.txt") & 0o7777, 0o604);
 
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     assert_eq!(
-        dest.join("modes/exec.sh").metadata().unwrap().permissions().mode() & 0o7777,
+        dest.join("modes/exec.sh")
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
         0o754
     );
     assert_eq!(
-        dest.join("modes/d/plain.txt").metadata().unwrap().permissions().mode() & 0o7777,
+        dest.join("modes/d/plain.txt")
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
         0o604
+    );
+    // Directories must keep their mode too: create_dir_all used to leave them at
+    // the umask, turning a 0700 folder world-readable.
+    assert_eq!(
+        dest.join("modes/d")
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
     );
 
     // real 7-Zip reads our attributes: it must restore the exec bit too
@@ -644,7 +731,13 @@ fn sevenz_preserves_unix_modes() {
         .unwrap_or(false);
     if ok {
         assert_eq!(
-            via7z.join("modes/exec.sh").metadata().unwrap().permissions().mode() & 0o777,
+            via7z
+                .join("modes/exec.sh")
+                .metadata()
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o754 & 0o777
         );
     }
@@ -660,9 +753,23 @@ fn sevenz_preserves_unix_modes() {
         .unwrap_or(false);
     if ok {
         let dest2 = root.join("out2");
-        extract(&from7z, &ExtractOptions { dest: dest2.clone(), ..Default::default() }, noop_progress).unwrap();
+        extract(
+            &from7z,
+            &ExtractOptions {
+                dest: dest2.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
         assert_eq!(
-            dest2.join("modes/exec.sh").metadata().unwrap().permissions().mode() & 0o7777,
+            dest2
+                .join("modes/exec.sh")
+                .metadata()
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
             0o754
         );
     }
@@ -670,6 +777,119 @@ fn sevenz_preserves_unix_modes() {
 }
 
 // Fixtures in tests/data/ come from the unrar crate (see tests/data/README.md).
+
+/// Every container records a directory mode. Extraction must restore it
+/// instead of leaving whatever `create_dir_all` produced under the umask,
+/// which silently turned a 0700 folder into world-readable 0755.
+#[cfg(unix)]
+#[test]
+fn directory_modes_survive_all_formats() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (format, ext) in [
+        (Format::Zip, "zip"),
+        (Format::Tar, "tar"),
+        (Format::TarGz, "tar.gz"),
+        (Format::SevenZ, "7z"),
+    ] {
+        let root = temp_root(&format!("dirmode-{ext}"));
+        let src = root.join("tree");
+        fs::create_dir_all(src.join("private")).unwrap();
+        fs::write(src.join("private/secret.txt"), "secret\n").unwrap();
+        fs::set_permissions(src.join("private"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        let archive = root.join(format!("tree.{ext}"));
+        compress(
+            std::slice::from_ref(&src),
+            &archive,
+            &CompressOptions {
+                format,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
+        let dest = root.join("out");
+        extract(
+            &archive,
+            &ExtractOptions {
+                dest: dest.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
+
+        let mode = dest
+            .join("tree/private")
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o700, "{ext} lost the directory mode (got {mode:o})");
+        assert_eq!(
+            fs::read(dest.join("tree/private/secret.txt")).unwrap(),
+            b"secret\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/// A destination that already holds `tree -> /outside` must not let the
+/// archive write through it. `safe_join` only inspects the entry name, so
+/// every format has to re-check the directory it resolved to.
+#[cfg(unix)]
+#[test]
+fn escaping_symlink_in_destination_is_rejected() {
+    for (format, ext) in [
+        (Format::Zip, "zip"),
+        (Format::Tar, "tar"),
+        (Format::TarGz, "tar.gz"),
+        (Format::SevenZ, "7z"),
+    ] {
+        let root = temp_root(&format!("esc-{ext}"));
+        let src = root.join("tree");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/evil.txt"), "pwned\n").unwrap();
+
+        let archive = root.join(format!("tree.{ext}"));
+        compress(
+            &[src],
+            &archive,
+            &CompressOptions {
+                format,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
+
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let dest = root.join("out");
+        fs::create_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("tree")).unwrap();
+
+        let result = extract(
+            &archive,
+            &ExtractOptions {
+                dest: dest.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        );
+        assert!(
+            result.is_err(),
+            "{ext}: an escaping symlink must abort extraction"
+        );
+        assert!(
+            !outside.join("sub/evil.txt").exists(),
+            "{ext}: wrote outside the destination"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+}
 
 /// Multi-threaded extraction (large zip archives automatically use the worker pool): content must match.
 #[test]
@@ -686,13 +906,31 @@ fn zip_parallel_extraction_matches_source() {
     }
 
     let archive = root.join("many.zip");
-    compress(&[src.clone()], &archive, &CompressOptions::default(), noop_progress).unwrap();
+    compress(
+        std::slice::from_ref(&src),
+        &archive,
+        &CompressOptions::default(),
+        noop_progress,
+    )
+    .unwrap();
     // 200 entries / 1.6MB: above the auto_workers threshold, so the multi-threaded path is always taken
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
 
     for (name, data) in expected.iter() {
-        assert_eq!(fs::read(dest.join("many").join(name)).unwrap(), *data, "{name}");
+        assert_eq!(
+            fs::read(dest.join("many").join(name)).unwrap(),
+            *data,
+            "{name}"
+        );
     }
     let _ = fs::remove_dir_all(&root);
 }
@@ -716,7 +954,16 @@ fn early_exit_extracts_target_without_reading_rest() {
 
     for format in [Format::Zip, Format::SevenZ, Format::Tar] {
         let archive = root.join(format!("ee.{}", format.extension()));
-        compress(&[src.clone()], &archive, &CompressOptions { format, ..Default::default() }, noop_progress).unwrap();
+        compress(
+            std::slice::from_ref(&src),
+            &archive,
+            &CompressOptions {
+                format,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap();
 
         // Corrupt the trailing region: for zip/7z hit the middle of the late entries' data (len/2);
         // tar is byte-transparent, so hit the tar header of late.bin (offset 512*3, deterministic)
@@ -727,18 +974,28 @@ fn early_exit_extracts_target_without_reading_rest() {
         // A full extraction must fail (proving the corrupted region really is read by the normal path)
         let full = extract(
             &archive,
-            &ExtractOptions { dest: root.join("full"), ..Default::default() },
+            &ExtractOptions {
+                dest: root.join("full"),
+                ..Default::default()
+            },
             noop_progress,
         );
-        assert!(full.is_err(), "{format:?}: corrupted archive must fail full extraction");
+        assert!(
+            full.is_err(),
+            "{format:?}: corrupted archive must fail full extraction"
+        );
 
         // Extract only the leading small entries: early termination -> the corrupted region is never touched
         let dest = root.join(format!("part-{}", format.extension()));
-        extract(&archive, &ExtractOptions {
-            dest: dest.clone(),
-            entries: Some(vec!["src/early.txt".into()]),
-            ..Default::default()
-        }, noop_progress)
+        extract(
+            &archive,
+            &ExtractOptions {
+                dest: dest.clone(),
+                entries: Some(vec!["src/early.txt".into()]),
+                ..Default::default()
+            },
+            noop_progress,
+        )
         .unwrap_or_else(|e| panic!("{format:?}: early-entry extraction must succeed: {e}"));
         assert_eq!(
             fs::read(dest.join("src/early.txt")).unwrap(),
@@ -859,7 +1116,15 @@ fn compress_dedups_duplicate_input_names() {
 
     // extraction preserves both copies with distinct content
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     assert_eq!(fs::read(dest.join("data/x.txt")).unwrap(), b"from-a");
     assert_eq!(fs::read(dest.join("data (1)/x.txt")).unwrap(), b"from-b");
     let _ = fs::remove_dir_all(&root);
@@ -878,18 +1143,40 @@ fn empty_file_and_deep_nesting_survive_all_archive_formats() {
 
     for format in [Format::Zip, Format::SevenZ, Format::Tar] {
         let archive = root.join(format!("e.{}", format.extension()));
-        compress(&[src.clone()], &archive, &CompressOptions { format, ..Default::default() }, noop_progress)
-            .unwrap_or_else(|e| panic!("{format:?} compress failed: {e}"));
+        compress(
+            std::slice::from_ref(&src),
+            &archive,
+            &CompressOptions {
+                format,
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} compress failed: {e}"));
         let dest = root.join(format!("out-{}", format.extension()));
-        extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress)
-            .unwrap_or_else(|e| panic!("{format:?} extract failed: {e}"));
-        assert_eq!(fs::read(dest.join("tree/zero.bin")).unwrap(), b"", "{format:?}");
+        extract(
+            &archive,
+            &ExtractOptions {
+                dest: dest.clone(),
+                ..Default::default()
+            },
+            noop_progress,
+        )
+        .unwrap_or_else(|e| panic!("{format:?} extract failed: {e}"));
+        assert_eq!(
+            fs::read(dest.join("tree/zero.bin")).unwrap(),
+            b"",
+            "{format:?}"
+        );
         assert_eq!(
             fs::read(dest.join("tree/a/b/c/d/e/f/g/h/i/j/leaf.txt")).unwrap(),
             b"deep leaf",
             "{format:?}"
         );
-        assert!(dest.join("tree/empty-dir").is_dir(), "{format:?} lost empty dir");
+        assert!(
+            dest.join("tree/empty-dir").is_dir(),
+            "{format:?} lost empty dir"
+        );
     }
     let _ = fs::remove_dir_all(&root);
 }
@@ -906,7 +1193,9 @@ fn gbk_zip_fixture_roundtrip() {
     {
         use std::io::Write;
         // "中文报告.txt" in GBK (11 bytes)
-        let gbk_name: &[u8] = &[0xD6, 0xD0, 0xCE, 0xC4, 0xB1, 0xA8, 0xB8, 0xE6, b'.', b't', b'x', b't'];
+        let gbk_name: &[u8] = &[
+            0xD6, 0xD0, 0xCE, 0xC4, 0xB1, 0xA8, 0xB8, 0xE6, b'.', b't', b'x', b't',
+        ];
         let crc = crc32(payload);
         let mut f = fs::File::create(&archive).unwrap();
         let mut local = Vec::new();
@@ -965,11 +1254,16 @@ fn gbk_zip_fixture_roundtrip() {
 
     // extract with auto: file lands under its proper Chinese name
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
-    assert_eq!(
-        fs::read(dest.join("中文报告.txt")).unwrap(),
-        b"gbk payload"
-    );
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dest.join("中文报告.txt")).unwrap(), b"gbk payload");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -984,8 +1278,19 @@ fn large_file_zip64_roundtrip() {
     let archive = root.join("big.zip");
     compress(&[src], &archive, &CompressOptions::default(), noop_progress).unwrap();
     let dest = root.join("out");
-    extract(&archive, &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
-    assert_eq!(fs::read(dest.join("big.bin")).unwrap().len(), 100 * 1024 * 1024);
+    extract(
+        &archive,
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(dest.join("big.bin")).unwrap().len(),
+        100 * 1024 * 1024
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -997,30 +1302,61 @@ fn split_volume_roundtrip() {
     let archive = root.join("out.zip");
 
     let stats = compress(
-        &[src.clone()],
+        std::slice::from_ref(&src),
         &archive,
-        &CompressOptions { format: Format::Zip, split: Some(4096), ..Default::default() },
+        &CompressOptions {
+            format: Format::Zip,
+            split: Some(4096),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap();
-    assert!(!archive.exists(), "single archive must be replaced by volumes");
-    assert!(stats.output_path.ends_with("out.zip.001"), "{:?}", stats.output_path);
+    assert!(
+        !archive.exists(),
+        "single archive must be replaced by volumes"
+    );
+    assert!(
+        stats.output_path.ends_with("out.zip.001"),
+        "{:?}",
+        stats.output_path
+    );
 
     let mut vol = 1;
-    while root.join(format!("out.zip.{vol:03}")).exists() { vol += 1; }
+    while root.join(format!("out.zip.{vol:03}")).exists() {
+        vol += 1;
+    }
     assert!(vol >= 3, "expected several volumes, got {vol}");
 
     // listing through the first volume
-    let entries = list_archive(&root.join("out.zip.001"), wispzip_core::NameEncoding::Auto, None).unwrap();
+    let entries = list_archive(
+        &root.join("out.zip.001"),
+        wispzip_core::NameEncoding::Auto,
+        None,
+    )
+    .unwrap();
     assert!(entries.iter().any(|e| e.name.contains("a.txt")));
 
     // extraction through the first volume
     let dest = root.join("out-dir");
-    extract(&root.join("out.zip.001"), &ExtractOptions { dest: dest.clone(), ..Default::default() }, noop_progress).unwrap();
+    extract(
+        &root.join("out.zip.001"),
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
+        noop_progress,
+    )
+    .unwrap();
     let got = walk_files(&dest);
     assert_eq!(got.len(), expected.len());
     for (exp, got) in expected.iter().zip(got.iter()) {
-        assert_eq!(fs::read(&got.0).unwrap(), fs::read(&exp.0).unwrap(), "{:?}" , got.0);
+        assert_eq!(
+            fs::read(&got.0).unwrap(),
+            fs::read(&exp.0).unwrap(),
+            "{:?}",
+            got.0
+        );
     }
     let _ = fs::remove_dir_all(&root);
 }
@@ -1033,7 +1369,11 @@ fn split_exact_multiple_has_no_empty_trailing_volume() {
     compress(
         &[src],
         &root.join("p.7z"),
-        &CompressOptions { format: Format::SevenZ, split: Some(4096), ..Default::default() },
+        &CompressOptions {
+            format: Format::SevenZ,
+            split: Some(4096),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap();
@@ -1041,11 +1381,18 @@ fn split_exact_multiple_has_no_empty_trailing_volume() {
     let mut vol = 1;
     let mut sizes = Vec::new();
     while root.join(format!("p.7z.{vol:03}")).exists() {
-        sizes.push(fs::metadata(root.join(format!("p.7z.{vol:03}"))).unwrap().len());
+        sizes.push(
+            fs::metadata(root.join(format!("p.7z.{vol:03}")))
+                .unwrap()
+                .len(),
+        );
         vol += 1;
     }
     assert!(!sizes.is_empty());
-    assert!(sizes.iter().all(|&s| s > 0), "empty trailing volume: {sizes:?}");
+    assert!(
+        sizes.iter().all(|&s| s > 0),
+        "empty trailing volume: {sizes:?}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -1057,7 +1404,11 @@ fn split_missing_volume_is_reported() {
     compress(
         &[src],
         &root.join("f.zip"),
-        &CompressOptions { format: Format::Zip, split: Some(512), ..Default::default() },
+        &CompressOptions {
+            format: Format::Zip,
+            split: Some(512),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap();
@@ -1065,7 +1416,10 @@ fn split_missing_volume_is_reported() {
     fs::remove_file(root.join("f.zip.002")).unwrap();
     let err = extract(
         &root.join("f.zip.001"),
-        &ExtractOptions { dest: root.join("out"), ..Default::default() },
+        &ExtractOptions {
+            dest: root.join("out"),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap_err();
@@ -1099,7 +1453,10 @@ fn rar_extracts_plain_fixture() {
     let dest = root.join("out");
     let st = extract(
         &archive,
-        &ExtractOptions { dest: dest.clone(), ..Default::default() },
+        &ExtractOptions {
+            dest: dest.clone(),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap_or_else(|e| panic!("rar extract failed: {e}"));
@@ -1108,7 +1465,7 @@ fn rar_extracts_plain_fixture() {
 
     // listing shows the same entries
     let entries = list_archive(&archive, wispzip_core::NameEncoding::Auto, None).unwrap();
-    assert_eq!(entries.len() as u64, st.files + 0, "list vs extract count");
+    assert_eq!(entries.len() as u64, st.files, "list vs extract count");
 }
 
 #[test]
@@ -1123,7 +1480,10 @@ fn rar_encrypted_content_needs_password() {
     // no password -> password error
     let err = extract(
         &archive,
-        &ExtractOptions { dest: root.join("o1"), ..Default::default() },
+        &ExtractOptions {
+            dest: root.join("o1"),
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap_err();
@@ -1165,8 +1525,12 @@ fn rar_encrypted_headers_listing_needs_password() {
     let err = list_archive(&archive, wispzip_core::NameEncoding::Auto, None).unwrap_err();
     assert!(err.is_password(), "expected password error, got {err}");
 
-    let entries = list_archive(&archive, wispzip_core::NameEncoding::Auto, Some("password")).unwrap();
-    assert!(entries.iter().any(|e| e.name == ".gitignore"), "{entries:?}");
+    let entries =
+        list_archive(&archive, wispzip_core::NameEncoding::Auto, Some("password")).unwrap();
+    assert!(
+        entries.iter().any(|e| e.name == ".gitignore"),
+        "{entries:?}"
+    );
 }
 
 #[test]
@@ -1177,11 +1541,17 @@ fn rar_compression_is_rejected() {
     let err = compress(
         &[src],
         &root.join("out.rar"),
-        &CompressOptions { format: Format::Rar, ..Default::default() },
+        &CompressOptions {
+            format: Format::Rar,
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap_err();
-    assert!(matches!(err, WispZipError::UnsupportedFormat(_)), "got {err}");
+    assert!(
+        matches!(err, WispZipError::UnsupportedFormat(_)),
+        "got {err}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -1229,9 +1599,12 @@ fn strip_prefix_flattens_selected_subtree() {
     for format in FORMATS {
         let archive = root.join(format!("sp.{}", format.extension()));
         compress(
-            &[src.clone()],
+            std::slice::from_ref(&src),
             &archive,
-            &CompressOptions { format: *format, ..Default::default() },
+            &CompressOptions {
+                format: *format,
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap();
@@ -1255,7 +1628,10 @@ fn strip_prefix_flattens_selected_subtree() {
 
         assert_eq!(stats.files, 2, "{format:?}: must extract 2 files");
         // After stripping: a.txt lands directly in dest/, b.txt keeps its deep/ subtree
-        assert!(dest.join("a.txt").is_file(), "{format:?}: a.txt should be at the dest/ root");
+        assert!(
+            dest.join("a.txt").is_file(),
+            "{format:?}: a.txt should be at the dest/ root"
+        );
         assert!(
             dest.join("deep").join("b.txt").is_file(),
             "{format:?}: the deep/b.txt subtree should be preserved"
@@ -1320,7 +1696,13 @@ fn staged_parts(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn split_volumes_are_byte_identical_to_single_archive() {
     const VOL: u64 = 64 * 1024;
-    for format in [Format::Zip, Format::SevenZ, Format::Tar, Format::TarGz, Format::TarBz2] {
+    for format in [
+        Format::Zip,
+        Format::SevenZ,
+        Format::Tar,
+        Format::TarGz,
+        Format::TarBz2,
+    ] {
         let tag = format.extension().replace('.', "-");
         let root = temp_root(&format!("split-bytes-{tag}"));
         let src = root.join("payload.bin");
@@ -1328,9 +1710,13 @@ fn split_volumes_are_byte_identical_to_single_archive() {
 
         let single = root.join(format!("single.{}", format.extension()));
         compress(
-            &[src.clone()],
+            std::slice::from_ref(&src),
             &single,
-            &CompressOptions { format, level: 1, ..Default::default() },
+            &CompressOptions {
+                format,
+                level: 1,
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{format:?} single compress failed: {e}"));
@@ -1339,7 +1725,12 @@ fn split_volumes_are_byte_identical_to_single_archive() {
         let stats = compress(
             &[src],
             &split,
-            &CompressOptions { format, level: 1, split: Some(VOL), ..Default::default() },
+            &CompressOptions {
+                format,
+                level: 1,
+                split: Some(VOL),
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{format:?} split compress failed: {e}"));
@@ -1353,17 +1744,26 @@ fn split_volumes_are_byte_identical_to_single_archive() {
             joined.len(),
             expected.len()
         );
-        assert!(joined == expected, "{format:?}: concatenated volumes differ from the archive");
+        assert!(
+            joined == expected,
+            "{format:?}: concatenated volumes differ from the archive"
+        );
         assert_eq!(stats.output_bytes, expected.len() as u64, "{format:?}");
 
         let sizes = volume_sizes(&split);
-        assert!(sizes.len() >= 2, "{format:?}: expected several volumes, got {sizes:?}");
+        assert!(
+            sizes.len() >= 2,
+            "{format:?}: expected several volumes, got {sizes:?}"
+        );
         assert!(
             sizes[..sizes.len() - 1].iter().all(|&s| s == VOL),
             "{format:?}: every volume but the last must be exactly {VOL} bytes: {sizes:?}"
         );
         assert!(sizes[sizes.len() - 1] <= VOL);
-        assert!(staged_parts(&root).is_empty(), "{format:?}: staged parts left behind");
+        assert!(
+            staged_parts(&root).is_empty(),
+            "{format:?}: staged parts left behind"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
@@ -1379,14 +1779,24 @@ fn cancelled_split_leaves_nothing_behind() {
     let err = compress(
         &[src],
         &out,
-        &CompressOptions { format: Format::Zip, split: Some(16 * 1024), ..Default::default() },
+        &CompressOptions {
+            format: Format::Zip,
+            split: Some(16 * 1024),
+            ..Default::default()
+        },
         |_| false,
     )
     .unwrap_err();
     assert!(matches!(err, WispZipError::Cancelled), "{err}");
 
-    assert!(volume_sizes(&out).is_empty(), "no volume may survive a cancel");
-    assert!(staged_parts(&root).is_empty(), "staging files must be removed");
+    assert!(
+        volume_sizes(&out).is_empty(),
+        "no volume may survive a cancel"
+    );
+    assert!(
+        staged_parts(&root).is_empty(),
+        "staging files must be removed"
+    );
     assert!(!out.exists(), "no single archive either");
     let _ = fs::remove_dir_all(&root);
 }
@@ -1419,9 +1829,13 @@ fn split_volumes_extract_matches_single_archive() {
 
         let single = root.join(format!("single.{}", format.extension()));
         compress(
-            &[src.clone()],
+            std::slice::from_ref(&src),
             &single,
-            &CompressOptions { format, level: 1, ..Default::default() },
+            &CompressOptions {
+                format,
+                level: 1,
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{format:?} single compress failed: {e}"));
@@ -1430,7 +1844,12 @@ fn split_volumes_extract_matches_single_archive() {
         compress(
             &[src],
             &split,
-            &CompressOptions { format, level: 1, split: Some(64 * 1024), ..Default::default() },
+            &CompressOptions {
+                format,
+                level: 1,
+                split: Some(64 * 1024),
+                ..Default::default()
+            },
             noop_progress,
         )
         .unwrap_or_else(|e| panic!("{format:?} split compress failed: {e}"));
@@ -1444,9 +1863,15 @@ fn split_volumes_extract_matches_single_archive() {
         let from_volumes = list_archive(&first, wispzip_core::NameEncoding::Auto, None)
             .unwrap_or_else(|e| panic!("{format:?} list volumes failed: {e}"));
         let names = |v: &[wispzip_core::EntryInfo]| -> Vec<(String, u64, bool)> {
-            v.iter().map(|e| (e.name.clone(), e.size, e.is_dir)).collect()
+            v.iter()
+                .map(|e| (e.name.clone(), e.size, e.is_dir))
+                .collect()
         };
-        assert_eq!(names(&from_single), names(&from_volumes), "{format:?}: listing differs");
+        assert_eq!(
+            names(&from_single),
+            names(&from_volumes),
+            "{format:?}: listing differs"
+        );
 
         // Extraction has to produce identical bytes and leave no temp copy.
         let dest = root.join("out-dir");
@@ -1487,9 +1912,12 @@ fn single_file_extract_still_selects_entries() {
     let src = build_tree(&root);
     let archive = root.join("one.zip");
     compress(
-        &[src.clone()],
+        std::slice::from_ref(&src),
         &archive,
-        &CompressOptions { format: Format::Zip, ..Default::default() },
+        &CompressOptions {
+            format: Format::Zip,
+            ..Default::default()
+        },
         noop_progress,
     )
     .unwrap();

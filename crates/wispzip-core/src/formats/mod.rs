@@ -47,7 +47,13 @@ mod tests {
 
     #[test]
     fn civil_roundtrip() {
-        for &(y, m, d) in &[(1970, 1, 1), (1980, 1, 1), (2000, 2, 29), (2026, 8, 28), (2107, 12, 31)] {
+        for &(y, m, d) in &[
+            (1970, 1, 1),
+            (1980, 1, 1),
+            (2000, 2, 29),
+            (2026, 8, 28),
+            (2107, 12, 31),
+        ] {
             let days = days_from_civil(y, m, d);
             assert_eq!(civil_from_days(days), (y, m, d));
         }

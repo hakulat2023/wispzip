@@ -11,9 +11,7 @@ use walkdir::WalkDir;
 
 use crate::error::{io_err, Result, WispZipError};
 use crate::format::Format;
-use crate::progress::{
-    new_cancel_flag, CountingWriter, Phase, Progress, Reporter, Shared,
-};
+use crate::progress::{new_cancel_flag, CountingWriter, Phase, Progress, Reporter, Shared};
 use crate::volumes;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,22 +76,34 @@ pub(crate) struct PlanEntry {
 /// The output is written to a `.wispzip-part` sibling first and renamed into
 /// place on success, so a failed or cancelled run never leaves a half-written
 /// archive behind the final name.
-pub fn compress<F>(inputs: &[PathBuf], out: &Path, opt: &CompressOptions, cb: F) -> Result<CompressStats>
+pub fn compress<F>(
+    inputs: &[PathBuf],
+    out: &Path,
+    opt: &CompressOptions,
+    cb: F,
+) -> Result<CompressStats>
 where
     F: FnMut(&Progress) -> bool,
 {
     if inputs.is_empty() {
         return Err(WispZipError::Other("no input files given".into()));
     }
+    // An empty password is not a password. Without this, zip would write
+    // AES-256 entries whose key is "" — the archive then reports "password
+    // required" on extract and can only be opened by typing nothing again.
+    let mut opt = opt.clone();
+    if opt.password.as_deref().is_some_and(str::is_empty) {
+        opt.password = None;
+    }
+    let opt = &opt;
     if matches!(
         opt.format,
         Format::Gz | Format::Zst | Format::Xz | Format::Bz2
-    ) {
-        if inputs.len() != 1 || inputs[0].is_dir() {
-            return Err(WispZipError::UnsupportedFormat(
-                "single-file streams (gz/zst/xz/bz2) compress exactly one file".into(),
-            ));
-        }
+    ) && (inputs.len() != 1 || inputs[0].is_dir())
+    {
+        return Err(WispZipError::UnsupportedFormat(
+            "single-file streams (gz/zst/xz/bz2) compress exactly one file".into(),
+        ));
     }
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
@@ -251,10 +261,7 @@ pub struct ScanStats {
     pub top_level: u64,
 }
 
-fn plan_opts(
-    inputs: &[PathBuf],
-    exclude_hidden: bool,
-) -> Result<(Vec<PlanEntry>, u64, u64, u64)> {
+fn plan_opts(inputs: &[PathBuf], exclude_hidden: bool) -> Result<(Vec<PlanEntry>, u64, u64, u64)> {
     let mut used = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut total = 0u64;
@@ -299,7 +306,25 @@ fn plan_opts(
             mtime: meta.modified().unwrap_or(UNIX_EPOCH),
             mode: unix_mode(&meta),
         });
-        for dent in WalkDir::new(inp).sort_by_file_name() {
+        // Filled by the `filter_entry` predicate below, added once the walk ends.
+        let hidden_skipped = std::cell::Cell::new(0u64);
+        for dent in WalkDir::new(inp)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|de| {
+                // Prune hidden directories instead of walking into them: a
+                // project folder with a large .git would otherwise be stat'ed
+                // in full only for every entry to be dropped afterwards.
+                if de.depth() == 0 || !exclude_hidden {
+                    return true;
+                }
+                let hidden = de.file_name().to_str().is_some_and(|n| n.starts_with('.'));
+                if hidden {
+                    hidden_skipped.set(hidden_skipped.get() + 1);
+                }
+                !hidden
+            })
+        {
             let Ok(de) = dent else {
                 continue;
             };
@@ -310,20 +335,6 @@ fn plan_opts(
             let m = fs::symlink_metadata(de.path()).map_err(|e| io_err(e, de.path()))?;
             if m.file_type().is_symlink() {
                 skipped += 1;
-                continue;
-            }
-            if exclude_hidden
-                && de
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|n| n.starts_with('.'))
-            {
-                skipped += 1;
-                if de.file_type().is_dir() {
-                    // don't even descend into hidden directories
-                    // (walkdir has no runtime pruning here; skipping entries
-                    // is enough because hidden children carry the dot too)
-                }
                 continue;
             }
             let rel = de.path().strip_prefix(inp).unwrap_or(de.path());
@@ -355,6 +366,7 @@ fn plan_opts(
                 files += 1;
             }
         }
+        skipped += hidden_skipped.get();
     }
     Ok((entries, total, files, skipped))
 }

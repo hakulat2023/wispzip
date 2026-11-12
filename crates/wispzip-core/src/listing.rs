@@ -34,7 +34,11 @@ pub struct EntryInfo {
 /// `password` is only needed for 7z / rar archives with encrypted headers;
 /// plain archives list without it. Split volumes are read as one stream, so a
 /// listing never materialises the whole archive on disk.
-pub fn list_archive(archive: &Path, encoding: NameEncoding, password: Option<&str>) -> Result<Vec<EntryInfo>> {
+pub fn list_archive(
+    archive: &Path,
+    encoding: NameEncoding,
+    password: Option<&str>,
+) -> Result<Vec<EntryInfo>> {
     let source = match crate::volumes::detect(archive)? {
         Some(set) => crate::source::ArchiveSource::from_volumes(set),
         None => crate::source::ArchiveSource::from_path(archive)?,
@@ -44,8 +48,10 @@ pub fn list_archive(archive: &Path, encoding: NameEncoding, password: Option<&st
     match class {
         Classification::SingleStream => {
             let meta = fs::metadata(source.display_path()).map_err(|e| io_err(e, archive))?;
-            let mtime = meta.modified().ok().map(|t| t).and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+            let mtime = meta.modified().ok().and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
             });
             Ok(vec![EntryInfo {
                 name: streams::output_name(&source.logical_path()),

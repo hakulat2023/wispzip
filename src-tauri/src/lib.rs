@@ -125,9 +125,7 @@ struct JobDoneEvent {
 
 fn spawn_job<F>(app: AppHandle, jobs: &Jobs, work: F) -> u32
 where
-    F: FnOnce(u32, &JobFlags) -> Result<serde_json::Value, core::WispZipError>
-        + Send
-        + 'static,
+    F: FnOnce(u32, &JobFlags) -> Result<serde_json::Value, core::WispZipError> + Send + 'static,
 {
     let job_id = NEXT_JOB.fetch_add(1, Ordering::SeqCst);
     let flags = JobFlags {
@@ -256,8 +254,7 @@ fn launch_args() -> Vec<String> {
 #[tauri::command]
 fn take_opened_paths() -> Vec<String> {
     let mut guard = PENDING_OPENED.lock().unwrap();
-    let v = std::mem::take(&mut *guard);
-    v
+    std::mem::take(&mut *guard)
 }
 
 #[tauri::command]
@@ -280,6 +277,10 @@ fn resume_job(jobs: State<'_, Jobs>, job_id: u32) -> bool {
         .unwrap_or(false)
 }
 
+// Tauri commands mirror the frontend `invoke` payload field-by-field, so the
+// parameter list is the wire contract; bundling these into a struct would mean
+// renaming fields on both sides for no gain.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_compress(
     app: AppHandle,
@@ -305,7 +306,7 @@ async fn start_compress(
     };
     let jobs = jobs.inner().clone();
     let job_id = spawn_job(app, &jobs, move |job_id, flags| {
-        let stats = core::compress(&inputs, &out, &opt, make_progress(app2, job_id, &flags))?;
+        let stats = core::compress(&inputs, &out, &opt, make_progress(app2, job_id, flags))?;
         Ok(serde_json::json!({
             "inputFiles": stats.input_files,
             "inputBytes": stats.input_bytes,
@@ -317,6 +318,10 @@ async fn start_compress(
     Ok(job_id)
 }
 
+// Tauri commands mirror the frontend `invoke` payload field-by-field, so the
+// parameter list is the wire contract; bundling these into a struct would mean
+// renaming fields on both sides for no gain.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_extract(
     app: AppHandle,
@@ -349,7 +354,7 @@ async fn start_extract(
     let jobs = jobs.inner().clone();
     let app2 = app.clone();
     let job_id = spawn_job(app, &jobs, move |job_id, flags| {
-        let stats = core::extract(&archive, &opt, make_progress(app2, job_id, &flags))?;
+        let stats = core::extract(&archive, &opt, make_progress(app2, job_id, flags))?;
         Ok(serde_json::json!({
             "files": stats.files,
             "dirs": stats.dirs,
@@ -369,14 +374,13 @@ async fn start_extract(
 fn macos_install_services(app: &AppHandle) -> Result<(), String> {
     use tauri::Manager;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let res = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?;
+    let res = app.path().resource_dir().map_err(|e| e.to_string())?;
     let candidates = [res.join("resources/services"), res.join("services")];
-    let src = candidates.iter().find(|p| p.exists()).cloned().ok_or_else(|| {
-        format!("service templates not found under {:?}", candidates)
-    })?;
+    let src = candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .ok_or_else(|| format!("service templates not found under {:?}", candidates))?;
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let dest_root = PathBuf::from(home).join("Library/Services");
     std::fs::create_dir_all(&dest_root).map_err(|e| e.to_string())?;
@@ -415,7 +419,10 @@ fn copy_dir_rewrite(from: &std::path::Path, to: &std::path::Path, bin: &str) -> 
         let tpath = to.join(entry.file_name());
         if fpath.is_dir() {
             copy_dir_rewrite(&fpath, &tpath, bin)?;
-        } else if fpath.extension().is_some_and(|e| e == "wflow" || e == "plist") {
+        } else if fpath
+            .extension()
+            .is_some_and(|e| e == "wflow" || e == "plist")
+        {
             let content = std::fs::read_to_string(&fpath).map_err(|e| e.to_string())?;
             std::fs::write(&tpath, content.replace("__WISPZIP_BIN__", bin))
                 .map_err(|e| e.to_string())?;
@@ -443,7 +450,10 @@ fn install_finder_services(app: AppHandle) -> Result<(), CmdError> {
 #[tauri::command]
 fn stat_path(path: String) -> Result<serde_json::Value, CmdError> {
     let p = PathBuf::from(&path);
-    let meta = std::fs::metadata(&p).map_err(|e| core::WispZipError::Io { path: p.clone(), source: e })?;
+    let meta = std::fs::metadata(&p).map_err(|e| core::WispZipError::Io {
+        path: p.clone(),
+        source: e,
+    })?;
     Ok(serde_json::json!({
         "size": meta.len(),
         "isDir": meta.is_dir(),
@@ -559,8 +569,10 @@ fn extract_entry_to_temp(
     password: Option<&str>,
 ) -> Result<PathBuf, core::WispZipError> {
     let dir = tmp_unique_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| core::WispZipError::Io { path: dir.clone(), source: e })?;
+    std::fs::create_dir_all(&dir).map_err(|e| core::WispZipError::Io {
+        path: dir.clone(),
+        source: e,
+    })?;
     let opt = core::ExtractOptions {
         dest: dir.clone(),
         entries: Some(vec![entry.to_string()]),
@@ -619,7 +631,7 @@ struct PreviewData {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     mime: Option<String>,
-    /// Text content (lossy) or base64 for images; empty for binary.
+    /// Text content (lossy), a full `data:` URL for images, empty for binary.
     content: String,
     truncated: bool,
     size: u64,
@@ -634,8 +646,18 @@ async fn preview_entry(
 ) -> Result<PreviewData, CmdError> {
     let archive = PathBuf::from(&archive);
     tauri::async_runtime::spawn_blocking(move || {
-        let path = extract_entry_to_temp(&archive, &entry, name_encoding(&encoding), password.as_deref())?;
-        let io_err = |e: std::io::Error| CmdError::from(core::WispZipError::Io { path: path.clone(), source: e });
+        let path = extract_entry_to_temp(
+            &archive,
+            &entry,
+            name_encoding(&encoding),
+            password.as_deref(),
+        )?;
+        let io_err = |e: std::io::Error| {
+            CmdError::from(core::WispZipError::Io {
+                path: path.clone(),
+                source: e,
+            })
+        };
         let result = (|| -> Result<PreviewData, CmdError> {
             let size = std::fs::metadata(&path).map_err(io_err)?.len();
             let name = path
@@ -644,13 +666,24 @@ async fn preview_entry(
                 .unwrap_or_default();
             if let Some(mime) = is_image_ext(&name) {
                 if size > PREVIEW_IMAGE_MAX {
-                    return Ok(PreviewData { kind: "binary", mime: None, content: String::new(), truncated: false, size });
+                    return Ok(PreviewData {
+                        kind: "binary",
+                        mime: None,
+                        content: String::new(),
+                        truncated: false,
+                        size,
+                    });
                 }
                 let bytes = std::fs::read(&path).map_err(io_err)?;
+                // The UI binds this straight into `<img src>`, so hand it a
+                // complete data URL rather than bare base64.
                 return Ok(PreviewData {
                     kind: "image",
                     mime: Some(mime.into()),
-                    content: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    content: format!(
+                        "data:{mime};base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(&bytes)
+                    ),
                     truncated: false,
                     size,
                 });
@@ -661,7 +694,13 @@ async fn preview_entry(
             buf.truncate(read);
             if buf.contains(&0) {
                 // binary payload: no text preview, UI offers open/extract instead
-                return Ok(PreviewData { kind: "binary", mime: None, content: String::new(), truncated: false, size });
+                return Ok(PreviewData {
+                    kind: "binary",
+                    mime: None,
+                    content: String::new(),
+                    truncated: false,
+                    size,
+                });
             }
             Ok(PreviewData {
                 kind: "text",
@@ -689,7 +728,12 @@ async fn open_entry(
 ) -> Result<String, CmdError> {
     let archive = PathBuf::from(&archive);
     tauri::async_runtime::spawn_blocking(move || {
-        let path = extract_entry_to_temp(&archive, &entry, name_encoding(&encoding), password.as_deref())?;
+        let path = extract_entry_to_temp(
+            &archive,
+            &entry,
+            name_encoding(&encoding),
+            password.as_deref(),
+        )?;
         app.opener()
             .open_path(path.to_string_lossy().into_owned(), None::<&str>)
             .map_err(|e| CmdError::other(e.to_string()))?;
@@ -698,7 +742,6 @@ async fn open_entry(
     .await
     .map_err(|e| CmdError::other(e.to_string()))?
 }
-
 
 #[tauri::command]
 fn app_version() -> String {
@@ -770,13 +813,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-                let settings_item = MenuItem::with_id(
-                    app,
-                    "settings",
-                    "设置…",
-                    true,
-                    Some("Cmd+,"),
-                )?;
+                let settings_item =
+                    MenuItem::with_id(app, "settings", "设置…", true, Some("Cmd+,"))?;
                 let app_submenu = Submenu::with_id_and_items(
                     app,
                     "app",
@@ -814,15 +852,14 @@ pub fn run() {
                 app.set_menu(app_menu)?;
 
                 let menu_handle = app.handle().clone();
-                app.on_menu_event(move |app_handle, ev| match ev.id.as_ref() {
-                    "settings" => {
+                app.on_menu_event(move |app_handle, ev| {
+                    if ev.id.as_ref() == "settings" {
                         let _ = app_handle.emit("wispzip:open-settings", ());
                         if let Some(w) = menu_handle.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
                     }
-                    _ => {}
                 });
             }
 
@@ -876,10 +913,7 @@ pub fn run() {
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
                     if !paths.is_empty() {
-                        PENDING_OPENED
-                            .lock()
-                            .unwrap()
-                            .extend(paths.iter().cloned());
+                        PENDING_OPENED.lock().unwrap().extend(paths.iter().cloned());
                         let _ = app.emit("wispzip:open-file", paths.clone());
                         // Cold-start race fallback: the listener registered late, so retry once after a delay
                         let h = app.clone();

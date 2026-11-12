@@ -2,17 +2,20 @@
 //! content), extraction and listing. File names stay in plain headers so
 //! listing works without a password, matching 7-Zip defaults.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::compress::{CompressOptions, PlanEntry};
-use crate::error::{cancel_io_error, io_err, Result, WispZipError};
+use crate::error::{cancel_io_error, io_err, Result, WispZipError, UNSAFE_ENTRY_PREFIX};
 use crate::extract::{
-    ensure_parent, normalize_entry_name, set_file_metadata, EntrySelection,
-    ExtractOptions, ExtractStats, TargetAction,
+    apply_dir_modes, normalize_entry_name, set_file_metadata, EntrySelection, ExtractOptions,
+    ExtractStats, ParentDirs, TargetAction,
 };
-use crate::progress::{system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared};
+use crate::progress::{
+    system_time_from_unix, unix_secs, CountingReader, CountingWriter, Progress, Shared,
+};
 use crate::source::ArchiveSource;
 
 // ---- write -----------------------------------------------------------------
@@ -36,11 +39,10 @@ where
     };
 
     let mut zw = SevenZWriter::new(sink).map_err(write_err)?;
-    let lzma = SevenZMethodConfiguration::new(SevenZMethod::LZMA2).with_options(
-        MethodOptions::LZMA2(sevenz_rust::lzma::LZMA2Options::with_preset(
-            opt.level.min(9) as u32,
-        )),
-    );
+    let lzma =
+        SevenZMethodConfiguration::new(SevenZMethod::LZMA2).with_options(MethodOptions::LZMA2(
+            sevenz_rust::lzma::LZMA2Options::with_preset(opt.level.min(9) as u32),
+        ));
     match opt.password.as_deref().filter(|p| !p.is_empty()) {
         Some(pw) => {
             zw.set_encrypt_header(false);
@@ -85,9 +87,7 @@ where
             }
         }
     }
-    let sink = zw
-        .finish()
-        .map_err(|e| io_err(e, Path::new("archive")))?;
+    let sink = zw.finish().map_err(|e| io_err(e, Path::new("archive")))?;
     Ok(sink)
 }
 
@@ -133,6 +133,14 @@ where
     }));
     let st2 = stats2.clone();
     let opt2 = opt.clone();
+    // Directory modes are applied once every entry is written (see apply_dir_modes).
+    let dir_modes: std::rc::Rc<std::cell::RefCell<Vec<(PathBuf, u32)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let dm2 = dir_modes.clone();
+    // Created directories are checked to resolve inside the destination, so a
+    // pre-existing `sub -> /outside` symlink cannot be written through.
+    let parents = std::rc::Rc::new(std::cell::RefCell::new(ParentDirs::new(&opt.dest)));
+    let pd2 = parents.clone();
 
     sz.for_each_entries(move |entry, reader| {
         {
@@ -148,11 +156,41 @@ where
         if name.is_empty() || !sel.selects(&name) {
             return Ok(true);
         }
-        if entry.is_directory || !entry.has_stream {
+        if entry.is_directory {
             let target = opt2.join_name(&name).map_err(wispzip_to_7z)?;
-            fs::create_dir_all(&target)
-                .map_err(|e| sevenz_rust::Error::Io(e, format!("{target:?}").into()))?;
+            pd2.borrow_mut().create(&target).map_err(wispzip_to_7z)?;
+            if let Some(mode) = unix_mode(entry.windows_attributes) {
+                dm2.borrow_mut().push((target, mode));
+            }
             st2.borrow_mut().dirs += 1;
+            return Ok(true);
+        }
+        // Empty files carry no stream (`has_stream == false`) but are not
+        // directories: sevenz-rust already reads the kEmptyFile bitmap into
+        // `is_directory`, so it is the only signal to trust here. Treating
+        // "no stream" as "directory" turned every empty file packed by real
+        // 7-Zip into an empty folder on extraction.
+        if !entry.has_stream {
+            let target = match opt2.resolve(&name).map_err(wispzip_to_7z)? {
+                TargetAction::Write(t) => t,
+                TargetAction::Skip => {
+                    st2.borrow_mut().skipped += 1;
+                    return Ok(true);
+                }
+            };
+            pd2.borrow_mut().ensure(&target).map_err(wispzip_to_7z)?;
+            let f = File::create(&target)
+                .map_err(|e| sevenz_rust::Error::Io(e, format!("{target:?}").into()))?;
+            set_file_metadata(&f, entry_mtime(entry), unix_mode(entry.windows_attributes));
+            st2.borrow_mut().files += 1;
+            {
+                let mut r = shared2.borrow_mut();
+                r.files_done += 1;
+                r.report(false);
+            }
+            if sel.settled(&name) {
+                return Ok(false);
+            }
             return Ok(true);
         }
         let target = match opt2.resolve(&name).map_err(wispzip_to_7z)? {
@@ -162,7 +200,7 @@ where
                 return Ok(true);
             }
         };
-        ensure_parent(&target).map_err(wispzip_to_7z)?;
+        pd2.borrow_mut().ensure(&target).map_err(wispzip_to_7z)?;
         let out = File::create(&target)
             .map_err(|e| sevenz_rust::Error::Io(e, format!("{target:?}").into()))?;
         let mut cw = CountingWriter::new(out, shared2.clone());
@@ -183,12 +221,7 @@ where
                 ));
             }
         }
-        let mtime = if entry.has_last_modified_date {
-            let secs = filetime_to_unix(u64::from(entry.last_modified_date));
-            (secs > 0).then(|| system_time_from_unix(secs as u64))
-        } else {
-            None
-        };
+        let mtime = entry_mtime(entry);
         set_file_metadata(&file, mtime, unix_mode(entry.windows_attributes));
         {
             let mut r = shared2.borrow_mut();
@@ -197,10 +230,14 @@ where
         }
         st2.borrow_mut().files += 1;
         // All selected entries are done: stop decoding and skip the rest of the archive
-        if sel.settled(&name) { return Ok(false); }
+        if sel.settled(&name) {
+            return Ok(false);
+        }
         Ok(true)
     })
     .map_err(|e| extract_err(e, &archive_path, content_encrypted))?;
+
+    apply_dir_modes(&dir_modes.borrow());
 
     let s2 = stats2.borrow();
     stats.files += s2.files;
@@ -243,6 +280,15 @@ pub(crate) fn list(src: &ArchiveSource, password: Option<&str>) -> Result<Vec<su
 }
 
 // ---- metadata helpers ------------------------------------------------------
+
+/// Entry modification time, or `None` when the archive does not carry one.
+fn entry_mtime(entry: &sevenz_rust::SevenZArchiveEntry) -> Option<SystemTime> {
+    if !entry.has_last_modified_date {
+        return None;
+    }
+    let secs = filetime_to_unix(u64::from(entry.last_modified_date));
+    (secs > 0).then(|| system_time_from_unix(secs as u64))
+}
 
 /// p7zip stores unix metadata in windows attributes when the unix-extension
 /// flag (0x8000) is set: the high 16 bits hold st_mode including file-type
@@ -297,6 +343,13 @@ fn extract_err(e: sevenz_rust::Error, path: &Path, encrypted: bool) -> WispZipEr
             WispZipError::PasswordRequired(path.display().to_string())
         }
         E::Io(io, ctx) => WispZipError::Other(format!("7z io error ({ctx}): {io}")),
+        // ParentDirs rejects a directory that resolves outside the destination
+        // with an UnsafeEntry; the closure could only carry it as `Other`, so
+        // unwrap it here to keep the host-facing message (and variant) intact.
+        E::Other(msg) => match msg.strip_prefix(UNSAFE_ENTRY_PREFIX) {
+            Some(rest) => WispZipError::UnsafeEntry(rest.to_string()),
+            None => WispZipError::Other(format!("7z: {msg}")),
+        },
         other => WispZipError::Other(format!("7z: {other}")),
     }
 }
