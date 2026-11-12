@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // App orchestration: home / archive browser / compress confirm / progress / done, plus the overlays.
 // Main flow: right-click or drop an archive -> browser; view, open and extract without unpacking.
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import AppIcon from "./components/AppIcon.vue";
 import HomeScreen from "./components/HomeScreen.vue";
 import BrowserScreen from "./components/BrowserScreen.vue";
@@ -424,6 +424,14 @@ onMounted(async () => {
     console.error("boot", e);
   } finally {
     booted.value = true;
+  }
+});
+
+// Detach every backend listener when the window goes away. Without this the
+// handles pile up across hot reloads and a re-mounted view subscribes twice.
+onUnmounted(() => {
+  for (const off of unlisteners.splice(0)) {
+    try { off(); } catch { /* already gone */ }
   }
 });
 

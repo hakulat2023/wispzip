@@ -89,9 +89,11 @@ function start() {
       password: password.value || undefined,
     });
   } catch (e) {
-    if (e instanceof Error) {
-      validationError.value = e.message;
-    }
+    // zod puts the human-readable text in `issues[].message`; `message` itself
+    // is the whole issue array serialized as JSON, which is what used to land
+    // in the error line.
+    const issue = (e as { issues?: { message?: string }[] }).issues?.[0];
+    validationError.value = issue?.message ?? (e instanceof Error ? e.message : String(e));
   }
 }
 

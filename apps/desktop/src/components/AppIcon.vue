@@ -51,6 +51,12 @@ const PATHS: Record<string, string> = {
   "win-max": '<rect x="5.5" y="5.5" width="13" height="13" rx="1.8"/>',
   "win-restore":
     '<rect x="4.5" y="7.5" width="11" height="11" rx="1.8"/><path d="M9 7.5V6a1.5 1.5 0 0 1 1.5-1.5h7A1.5 1.5 0 0 1 19 6v7a1.5 1.5 0 0 1-1.5 1.5h-1.5"/>',
+  minus: '<path d="M5 12h14"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  maximize:
+    '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  keyboard:
+    '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/>',
   sun:
     '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon:
